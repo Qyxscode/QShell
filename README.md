@@ -1,4 +1,4 @@
-# QShell
+# QShell(自用)
 
 QShell 是一个面向 Windows 的 SSH / SFTP / Telnet / 串口一体化终端，基于 **Tauri 2 + Rust + Vue 3 + xterm.js** 构建。
 
