@@ -1,0 +1,55 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "QShell",
+  "version": "0.99.70",
+  "mainBinaryName": "QShell",
+  "identifier": "com.a6704.qshell",
+  "build": {
+    "beforeDevCommand": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path 'QShell-WinUI3') { Set-Location 'QShell-WinUI3' }; npm --prefix ..\\qshell-next run dev\"",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File QShell-WinUI3\\sync-ui.ps1",
+    "frontendDist": "ui_dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "QShell",
+        "width": 1655,
+        "height": 870,
+        "minWidth": 1080,
+        "minHeight": 640,
+        "decorations": false,
+        "transparent": false,
+        "shadow": true,
+        "visible": false,
+        "backgroundColor": "#151517",
+        "additionalBrowserArgs": "--disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=CalculateNativeWinOcclusion",
+        "dragDropEnabled": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "nsis": {
+        "languages": ["SimpChinese"],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "installer-hooks.nsh",
+        "installMode": "currentUser"
+      }
+    }
+  }
+}

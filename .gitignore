@@ -1,0 +1,41 @@
+# Rust / 构建产物
+/target
+target/
+**/target/
+*.pdb
+*.rlib
+*.rmeta
+
+# 前端依赖与产物
+node_modules/
+dist/
+ui_dist/
+
+# 安装包与可执行文件（请通过 Release 分发）
+*.exe
+*.msi
+*.msix
+*.appx
+
+# 本地配置、凭据与密钥（绝对不要提交）
+config.json
+config.json.bak
+*.qshell-tmp-*
+*.qshell-part
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+known_hosts
+
+# 日志与崩溃转储
+*.log
+*.dmp
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

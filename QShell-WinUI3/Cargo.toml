@@ -1,0 +1,53 @@
+[package]
+name = "qshell"
+version = "0.99.70"
+edition = "2024"
+
+[[bin]]
+name = "QShell"
+path = "src/main.rs"
+
+[lib]
+name = "qshell_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+ssh2 = { version = "0.9", features = ["openssl-on-win32", "vendored-openssl"] }
+parking_lot = "0.12"
+reqwest = { version = "0.13.5", features = ["blocking"] }
+regex = "1.13.1"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+chrono = "0.4"
+lazy_static = "1.5.1"
+notify-rust = "4"
+tauri-plugin-snap-layout = "1.0.9"
+serialport = "4.10.1"
+arboard = "3.6"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+portable-pty = "0.9"
+aes-gcm = "0.10"
+pbkdf2 = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+webview2-com = "0.39.1"
+windows-core = "0.62"
+tauri-winrt-notification = "0.8.1"
