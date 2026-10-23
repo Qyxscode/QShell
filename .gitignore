@@ -42,3 +42,6 @@ desktop.ini
 
 # 本地发布脚本（不进入仓库）
 发布更新.bat
+
+# 自动更新清单（作为 Release 附件上传，不进仓库）
+QShell-WinUI3/latest.json
