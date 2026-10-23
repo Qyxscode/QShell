@@ -1,24 +1,13 @@
-#[path = "../../qshell-next/src-tauri/src/ssh.rs"]
 mod ssh;
-#[path = "../../qshell-next/src-tauri/src/config.rs"]
 mod config;
-#[path = "../../qshell-next/src-tauri/src/config_crypto.rs"]
 mod config_crypto;
-#[path = "../../qshell-next/src-tauri/src/probe.rs"]
 mod probe;
-#[path = "../../qshell-next/src-tauri/src/sftp.rs"]
 mod sftp;
-#[path = "../../qshell-next/src-tauri/src/port_forward.rs"]
 mod port_forward;
-#[path = "../../qshell-next/src-tauri/src/monitor.rs"]
 mod monitor;
-#[path = "../../qshell-next/src-tauri/src/backup.rs"]
 mod backup;
-#[path = "../../qshell-next/src-tauri/src/traffic.rs"]
 mod traffic;
-#[path = "../../qshell-next/src-tauri/src/local_fs.rs"]
 mod local_fs;
-#[path = "../../qshell-next/src-tauri/src/keygen.rs"]
 mod keygen;
 pub mod generic_terminal;
 

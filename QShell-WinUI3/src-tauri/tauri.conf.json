@@ -5,10 +5,10 @@
     "mainBinaryName":  "QShell",
     "identifier":  "com.a6704.qshell",
     "build":  {
-                  "beforeDevCommand":  "powershell -NoProfile -ExecutionPolicy Bypass -Command \"if (Test-Path \u0027QShell-WinUI3\u0027) { Set-Location \u0027QShell-WinUI3\u0027 }; npm --prefix ..\\qshell-next run dev\"",
+    "beforeDevCommand": "npm run dev",
                   "devUrl":  "http://localhost:1420",
-                  "beforeBuildCommand":  "powershell -NoProfile -ExecutionPolicy Bypass -File QShell-WinUI3\\sync-ui.ps1",
-                  "frontendDist":  "ui_dist"
+                  "beforeBuildCommand":  "npm run build",
+                  "frontendDist":  "../dist"
               },
     "app":  {
                 "windows":  [
