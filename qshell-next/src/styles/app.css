@@ -5966,3 +5966,63 @@ body,
   justify-content: flex-end;
   gap: 8px;
 }
+/* BUG-036 修复：端口转发按钮组与描述文本左对齐，统一行高 */
+.forward-rule-actions {
+  justify-content: flex-start;
+  margin-top: 2px;
+}
+
+.forward-rule-desc-line {
+  margin-bottom: 4px;
+}
+
+/* 更新弹窗 */
+.update-version {
+  color: var(--color-primary);
+}
+
+.update-notes {
+  margin-top: 8px;
+  max-height: 120px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.update-progress-track {
+  margin-top: 10px;
+  height: 8px;
+  border-radius: 4px;
+  background: var(--bg-capsule);
+  overflow: hidden;
+}
+
+.update-progress-bar {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 4px;
+  transition: width 0.2s ease;
+}
+
+.update-progress-text {
+  margin-top: 6px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+/* 端口转发弹窗：规则过多时限制高度并滚动，避免溢出窗体 */
+.forward-modal {
+  max-height: 82vh;
+}
+
+.forward-modal .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
