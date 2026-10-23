@@ -39,3 +39,6 @@ known_hosts
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 本地发布脚本（不进入仓库）
+发布更新.bat
