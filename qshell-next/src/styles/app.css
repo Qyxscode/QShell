@@ -5859,3 +5859,110 @@ body,
   font-weight: 500;
   color: var(--text-sec, #666);
 }
+
+/* ===== 端口转发 ===== */
+.forward-draft-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.forward-arrow {
+  color: var(--text-sub);
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.forward-rule-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-capsule);
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.forward-rule-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.forward-status {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.forward-status.on {
+  color: #34D399;
+  background: rgba(52, 211, 153, 0.15);
+}
+
+.forward-status.off {
+  color: var(--text-sub);
+  background: rgba(128, 128, 128, 0.15);
+}
+
+.forward-error {
+  flex-shrink: 0;
+  max-width: 220px;
+  color: #EF4444;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 端口转发：错误信息单独一行，避免挤压规则描述 */
+.forward-rule-block {
+  margin-bottom: 8px;
+}
+
+.forward-rule-block .forward-rule-row {
+  margin-bottom: 0;
+}
+
+.forward-error-line {
+  color: #EF4444;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 4px 10px 0;
+  word-break: break-all;
+}
+/* 端口转发：规则描述允许换行完整显示，不再被省略号裁切 */
+.forward-rule-desc {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-all;
+  line-height: 1.45;
+}
+/* 端口转发：规则描述独占一行，操作按钮另起一行，避免挤压/裁切 */
+.forward-rule-block {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--bg-capsule);
+  margin-bottom: 8px;
+}
+
+.forward-rule-desc-line {
+  font-size: 12px;
+  color: var(--text-main);
+  line-height: 1.5;
+  word-break: break-all;
+  margin-bottom: 6px;
+}
+
+.forward-rule-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}

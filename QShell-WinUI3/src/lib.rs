@@ -8,6 +8,8 @@ mod config_crypto;
 mod probe;
 #[path = "../../qshell-next/src-tauri/src/sftp.rs"]
 mod sftp;
+#[path = "../../qshell-next/src-tauri/src/port_forward.rs"]
+mod port_forward;
 #[path = "../../qshell-next/src-tauri/src/monitor.rs"]
 mod monitor;
 #[path = "../../qshell-next/src-tauri/src/backup.rs"]
@@ -30,6 +32,7 @@ use sftp::{
     sftp_chmod, sftp_stat, sftp_upload_file, sftp_download_file,
     sftp_home_dir, cancel_sftp_transfer
 };
+use port_forward::{PortForwardManager, start_local_forward, stop_local_forward, list_running_forwards};
 use monitor::fetch_system_metrics;
 use local_fs::{list_local_dir, local_roots, local_known_folders, local_path_exists, read_local_image_data_url, local_image_thumbnail};
 use keygen::{generate_ssh_key, inspect_ssh_key};
@@ -465,6 +468,7 @@ pub fn run() {
         )
         .manage(SshManager::new())
         .manage(GenericStreamManager::new())
+        .manage(PortForwardManager::new())
         .setup(|app| {
             register_notification_app_id();
             if let Some(window) = app.get_webview_window("main") {
@@ -495,6 +499,9 @@ pub fn run() {
             write_ssh_session,
             resize_ssh_session,
             close_ssh_session,
+            start_local_forward,
+            stop_local_forward,
+            list_running_forwards,
             load_hosts_config,
             save_hosts_config,
             is_config_encrypted,

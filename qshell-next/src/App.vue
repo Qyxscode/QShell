@@ -397,7 +397,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.71");
+const appVersion = ref("0.99.72");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -3446,6 +3446,132 @@ async function submitUnlock(password: string) {
   }
 }
 
+// --- 端口转发（本地转发）---
+interface ForwardRule {
+  id: string;
+  localPort: number;
+  remoteHost: string;
+  remotePort: number;
+}
+
+const forwardModal = ref({
+  show: false,
+  hostKey: "",
+  rules: [] as ForwardRule[],
+  running: {} as Record<string, boolean>,
+  actualPorts: {} as Record<string, number>,
+  errors: {} as Record<string, string>,
+  draft: { localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 },
+});
+
+function forwardStorageKey(hostKey: string) {
+  return `qshell_forwards_${hostKey}`;
+}
+
+function loadForwardRules(hostKey: string): ForwardRule[] {
+  try {
+    const raw = localStorage.getItem(forwardStorageKey(hostKey));
+    return raw ? (JSON.parse(raw) as ForwardRule[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveForwardRules(hostKey: string, rules: ForwardRule[]) {
+  try {
+    localStorage.setItem(forwardStorageKey(hostKey), JSON.stringify(rules));
+  } catch {
+    /* 忽略存储失败 */
+  }
+}
+
+function activeForwardHostKey(): string {
+  const sess = activeSession.value;
+  if (!sess?.host) return "";
+  return `${sess.host.host}:${sess.host.port}:${sess.host.user}`;
+}
+
+async function openForwardModal() {
+  const sess = activeSession.value;
+  if (!sess || sess.host?.protocol !== "ssh") return;
+  const key = activeForwardHostKey();
+  const rules = loadForwardRules(key);
+  forwardModal.value = {
+    show: true,
+    hostKey: key,
+    rules,
+    running: {},
+    actualPorts: {},
+    errors: {},
+    draft: { localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 },
+  };
+  // 关闭面板不会停止转发：重新打开时把仍在运行的任务状态恢复回来
+  try {
+    const running = await invoke<Array<{ id: string; local_port: number }>>("list_running_forwards");
+    for (const info of running) {
+      if (!rules.some(r => r.id === info.id)) continue;
+      forwardModal.value.running[info.id] = true;
+      forwardModal.value.actualPorts[info.id] = info.local_port;
+    }
+  } catch {
+    /* 忽略查询失败 */
+  }
+}
+
+function addForwardRule() {
+  const m = forwardModal.value;
+  const localPort = Number(m.draft.localPort) || 0;
+  const remotePort = Number(m.draft.remotePort) || 0;
+  const remoteHost = m.draft.remoteHost.trim();
+  if (!remoteHost || remotePort <= 0) return;
+  m.rules.push({
+    id: `fwd_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+    localPort,
+    remoteHost,
+    remotePort,
+  });
+  saveForwardRules(m.hostKey, m.rules);
+}
+
+async function startForwardRule(rule: ForwardRule) {
+  const m = forwardModal.value;
+  const sess = activeSession.value;
+  if (!sess) return;
+  m.errors[rule.id] = "";
+  try {
+    const port = await invoke<number>("start_local_forward", {
+      forwardId: rule.id,
+      sessionId: sess.id,
+      localPort: rule.localPort,
+      remoteHost: rule.remoteHost,
+      remotePort: rule.remotePort,
+    });
+    m.actualPorts[rule.id] = port;
+    m.running[rule.id] = true;
+  } catch (e: any) {
+    m.running[rule.id] = false;
+    m.errors[rule.id] = String(e?.message || e);
+  }
+}
+
+async function stopForwardRule(rule: ForwardRule) {
+  const m = forwardModal.value;
+  try {
+    await invoke("stop_local_forward", { forwardId: rule.id });
+  } catch {
+    /* 已停止 */
+  }
+  m.running[rule.id] = false;
+  delete m.actualPorts[rule.id];
+}
+
+function removeForwardRule(rule: ForwardRule) {
+  const m = forwardModal.value;
+  void stopForwardRule(rule);
+  m.rules = m.rules.filter(r => r.id !== rule.id);
+  saveForwardRules(m.hostKey, m.rules);
+}
+
 // --- 自动更新 ---
 const updating = ref(false);
 
@@ -5978,6 +6104,15 @@ onUnmounted(() => {
         </button>
 
         <button 
+          :class="['top-icon-btn', forwardModal.show ? 'active' : '']"
+          :disabled="!activeSession || activeSession.host?.protocol !== 'ssh'"
+          @click="openForwardModal"
+          title="端口转发（本地转发）"
+        >
+          <Icons name="bolt" size="24" />
+        </button>
+
+        <button 
           :class="['top-icon-btn', showTerminalSettingsModal ? 'active' : '']"
           @click="showTerminalSettingsModal = true"
           title="首选项与终端设置"
@@ -7793,6 +7928,73 @@ onUnmounted(() => {
       :error="encryptionModalError"
       @submit="submitEncryptionChange"
     />
+
+    <!-- 端口转发（本地转发） -->
+    <Transition name="modal-fade">
+      <div v-if="forwardModal.show" class="modal-overlay" @mousedown.self="forwardModal.show = false">
+        <div class="modal-card">
+          <div class="modal-header">
+            <span class="modal-title">端口转发（本地转发）</span>
+            <span class="modal-close" @click="forwardModal.show = false">✕</span>
+          </div>
+          <div class="modal-body">
+            <p class="confirm-modal-text">
+              浏览器访问 <b>127.0.0.1:{{ forwardModal.draft.localPort || "本机端口" }}</b>
+              → 实际连接到服务器上的
+              <b>{{ forwardModal.draft.remoteHost || "目标地址" }}:{{ forwardModal.draft.remotePort || "目标端口" }}</b>
+            </p>
+            <div class="forward-draft-row">
+              <input
+                v-model.number="forwardModal.draft.localPort"
+                type="number"
+                class="modal-input"
+                placeholder="本机端口（浏览器访问）"
+                style="width: 150px;"
+              />
+              <span class="forward-arrow">→</span>
+              <input
+                v-model="forwardModal.draft.remoteHost"
+                class="modal-input"
+                placeholder="目标地址（服务器上的）"
+                style="flex: 1;"
+              />
+              <input
+                v-model.number="forwardModal.draft.remotePort"
+                type="number"
+                class="modal-input"
+                placeholder="目标端口"
+                style="width: 100px;"
+              />
+              <button class="btn-sec-act" @click="addForwardRule">添加</button>
+            </div>
+            <div v-if="forwardModal.rules.length === 0" class="sftp-empty">还没有转发规则</div>
+            <div v-for="rule in forwardModal.rules" :key="rule.id" class="forward-rule-block">
+              <div class="forward-rule-desc-line">
+                浏览器 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 服务器 {{ rule.remoteHost }}:{{ rule.remotePort }}
+              </div>
+              <div class="forward-rule-actions">
+                <span :class="['forward-status', forwardModal.running[rule.id] ? 'on' : 'off']">
+                  {{ forwardModal.running[rule.id] ? '运行中' : '已停止' }}
+                </span>
+                <button
+                  class="btn-sec-act"
+                  @click="forwardModal.running[rule.id] ? stopForwardRule(rule) : startForwardRule(rule)"
+                >
+                  {{ forwardModal.running[rule.id] ? '停止' : '启动' }}
+                </button>
+                <button class="btn-cancel" @click="removeForwardRule(rule)">删除</button>
+              </div>
+              <div v-if="forwardModal.errors[rule.id]" class="forward-error-line">
+                ⚠ {{ forwardModal.errors[rule.id] }}
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-cancel" @click="forwardModal.show = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- SSH 密钥生成向导 -->
     <KeyGenModal
