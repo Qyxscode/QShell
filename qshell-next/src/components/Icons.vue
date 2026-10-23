@@ -56,9 +56,9 @@
     <circle cx="12" cy="17" r="1" fill="currentColor"/>
   </svg>
 
-  <!-- 7. 闪电/极速终端图标 -->
+  <!-- 7. 闪电/极速终端图标 (整体缩放至与铃铛/月亮同视觉尺寸，2.1px 线宽) -->
   <svg v-else-if="name === 'bolt'" :width="size" :height="size" viewBox="0 0 24 24" fill="none" class="v-icon">
-    <path d="M13 2L3 14H12L11 22L21 10H12L13 2Z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="currentColor" fill-opacity="0.2"/>
+    <path d="M12.8 4.2L5 13.6H12L11.2 19.8L19 10.4H12L12.8 4.2Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" fill="currentColor" fill-opacity="0.2"/>
   </svg>
 
   <!-- 8. 月亮深色模式图标 (2.1px 饱满线宽 + 居中圆润饱满月牙) -->
