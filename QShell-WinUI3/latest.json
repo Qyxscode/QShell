@@ -1,0 +1,11 @@
+{
+    "version":  "0.99.70",
+    "notes":  "QShell 0.99.70",
+    "pub_date":  "2026-10-23T21:05:42Z",
+    "platforms":  {
+                      "windows-x86_64":  {
+                                             "signature":  "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVSMk5oZm8xRUM3WWlpcXphUGN0K2ZxWlFKT1VEdXBDeGY0WnhMVDVYZ3RIcWRiV1EramNYQmZjRE9NM0VWWmljdlFGdnh5OHg4N3NCOUxudkV5WTdWMDF4VHQrT2NJS0F3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyNzg5NTM1CWZpbGU6UVNoZWxsXzAuOTkuNzBfeDY0LXNldHVwLmV4ZQl2ZXJzaW9uOjAuOTkuNzAKMmtrOGtjZG9BbUhpYUZHY0ZWM1V4MzlnYnhIQUhSSG1vRFdjRW9jYmY3cVVoMG1iTmZVYjBaU0lDL0crMzI1Qkx3UmgzaFNxY1R3anZSRVJidVVEQmc9PQo=",
+                                             "url":  "https://github.com/Qyxscode/QShell/releases/download/v0.99.70/QShell_0.99.70_x64-setup.exe"
+                                         }
+                  }
+}
