@@ -15,9 +15,9 @@ import CustomDateTimePicker from "./components/CustomDateTimePicker.vue";
 import KeyGenModal from "./components/KeyGenModal.vue";
 import UnlockModal from "./components/UnlockModal.vue";
 import EncryptionModal from "./components/EncryptionModal.vue";
+import UpdateDialog from "./components/UpdateDialog.vue";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
-import { ask, message } from "@tauri-apps/plugin-dialog";
 
 // --- 界面状态 ---
 const currentView = ref<"workspace" | "mgmt">("workspace");
@@ -397,7 +397,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.72");
+const appVersion = ref("0.99.73");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -3574,27 +3574,80 @@ function removeForwardRule(rule: ForwardRule) {
 
 // --- 自动更新 ---
 const updating = ref(false);
+const updateDialog = ref({
+  show: false,
+  mode: "latest" as "latest" | "available" | "downloading" | "error",
+  version: "",
+  notes: "",
+  error: "",
+  progress: 0,
+});
+let pendingUpdate: any = null;
 
 async function checkForUpdates(silent = false) {
   if (!isTauri) return;
   try {
     const update = await check();
     if (!update) {
-      if (!silent) await message("当前已是最新版本。", { title: "检查更新", kind: "info" });
+      if (!silent) {
+        updateDialog.value = {
+          show: true,
+          mode: "latest",
+          version: "",
+          notes: "",
+          error: "",
+          progress: 0,
+        };
+      }
       return;
     }
-    const yes = await ask(
-      `发现新版本 ${update.version}（当前 ${update.currentVersion}）。\n\n${update.body || ""}\n\n是否下载并安装？`,
-      { title: "发现新版本", kind: "info" }
-    );
-    if (!yes) return;
-    updating.value = true;
-    await update.downloadAndInstall();
+    pendingUpdate = update;
+    updateDialog.value = {
+      show: true,
+      mode: "available",
+      version: update.version,
+      notes: update.body || "",
+      error: "",
+      progress: 0,
+    };
+  } catch (e: any) {
+    if (!silent) {
+      updateDialog.value = {
+        show: true,
+        mode: "error",
+        version: "",
+        notes: "",
+        error: String(e?.message || e || "检查更新失败"),
+        progress: 0,
+      };
+    }
+  }
+}
+
+async function installUpdate() {
+  const update = pendingUpdate;
+  if (!update) return;
+  updateDialog.value.mode = "downloading";
+  updateDialog.value.progress = 0;
+  updating.value = true;
+  try {
+    let total = 0;
+    let downloaded = 0;
+    await update.downloadAndInstall((event: any) => {
+      if (event.event === "Started") {
+        total = event.data?.contentLength || 0;
+      } else if (event.event === "Progress") {
+        downloaded += event.data?.chunkLength || 0;
+        if (total > 0) {
+          updateDialog.value.progress = Math.min(100, Math.round((downloaded / total) * 100));
+        }
+      }
+    });
     await relaunch();
   } catch (e: any) {
-    if (!silent) await message(`检查更新失败：${e?.message || e}`, { title: "检查更新", kind: "error" });
-  } finally {
     updating.value = false;
+    updateDialog.value.mode = "error";
+    updateDialog.value.error = String(e?.message || e || "下载更新失败");
   }
 }
 
@@ -7929,10 +7982,21 @@ onUnmounted(() => {
       @submit="submitEncryptionChange"
     />
 
+    <!-- 检查更新 / 发现新版本 -->
+    <UpdateDialog
+      v-model="updateDialog.show"
+      :mode="updateDialog.mode"
+      :version="updateDialog.version"
+      :notes="updateDialog.notes"
+      :error="updateDialog.error"
+      :progress="updateDialog.progress"
+      @install="installUpdate"
+    />
+
     <!-- 端口转发（本地转发） -->
     <Transition name="modal-fade">
       <div v-if="forwardModal.show" class="modal-overlay" @mousedown.self="forwardModal.show = false">
-        <div class="modal-card">
+        <div class="modal-card forward-modal">
           <div class="modal-header">
             <span class="modal-title">端口转发（本地转发）</span>
             <span class="modal-close" @click="forwardModal.show = false">✕</span>
