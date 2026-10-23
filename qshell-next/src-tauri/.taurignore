@@ -1,4 +1,0 @@
-# Ignore config files from triggering cargo watch rebuild
-config.json
-*.json
-target/
