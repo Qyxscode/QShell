@@ -16,6 +16,8 @@
     "core:window:allow-set-focus",
     "core:window:allow-destroy",
     "dialog:default",
+    "updater:default",
+    "process:default",
     "snap-layout:default"
   ]
 }
