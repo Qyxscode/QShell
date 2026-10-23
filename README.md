@@ -1,75 +1,56 @@
-# QShell(自用)
+# QShell
 
-QShell 是一个面向 Windows 10(1809以上)的 SSH / SFTP / Telnet / 串口一体化终端，基于 **Tauri 2 + Rust + Vue 3 + xterm.js** 构建。
+面向 Windows 10 / 11 的 SSH / SFTP / Telnet / 串口 / 本地终端一体化客户端，基于 **Tauri 2 + Rust + Vue 3 + xterm.js**。
 
 ## 功能
 
 - **SSH2**：密码、私钥（RSA / ECDSA / ED25519）、键盘交互式认证、系统 SSH Agent
 - **SFTP**：浏览、上传、下载、重命名、删除、chmod，带进度与取消
-- **Telnet**：ECHO / SGA / TTYPE / NAWS 协商
+- **Telnet**：ECHO / SGA / TTYPE / NAWS 协商、终端类型选择
 - **串口**：波特率、数据位、校验位、停止位、流控、DTR/RTS、换行转换
 - **本地终端**：内置 PowerShell / CMD（ConPTY）
+- **端口转发**：本地端口映射到远端服务
 - **终端类型**：自动探测（`infocmp`）/ xterm-256color / xterm / vt220 / vt100 / linux / ansi
 - **会话管理**：多标签、拖拽排序、标签锁定、只读模式
 - **系统监控**：CPU / 内存 / 磁盘 / 网络实时面板与折线图
 - **流量审计**：基于网卡计数器与 vnstat 的周期统计（可选）
 - **配置加密**：可选主密码（PBKDF2-SHA256 + AES-256-GCM）
+- **自动更新**：检查、下载、安装、重启
 - **其他**：IPv6、命令备忘录、系统托盘、开机自启、本地/WebDAV 备份
-
-## 系统要求
-
-- Windows 10 / 11 x64
-- WebView2 Runtime（Windows 11 自带；Windows 10 可能需要安装）
 
 ## 目录结构
 
 ```
-.
-├── QShell-WinUI3/      # Tauri 宿主（窗口、托盘、命令注册）
-└── qshell-next/        # 前端（Vue 3）与核心引擎源码（Rust）
-    └── src-tauri/src/  # SSH / SFTP / Telnet / 串口 / 监控 / 流量审计
+QShell/
+├── QShell-WinUI3/          # 完整项目（Tauri 标准布局）
+│   ├── src/                # Vue 3 前端
+│   ├── src-tauri/          # Rust 后端
+│   │   ├── src/            # SSH / SFTP / Telnet / 串口 / 监控 / 流量审计 / 端口转发
+│   │   └── tauri.conf.json
+│   ├── package.json
+│   └── vite.config.ts
+├── LICENSE
+└── README.md
 ```
-
-> 注意：`QShell-WinUI3/src/lib.rs` 通过 `#[path = "../../qshell-next/src-tauri/src/..."]` 直接引用核心引擎，
-> 因此 **两个目录必须保持同级**，否则编译会报找不到文件。
 
 ## 构建
 
-### 环境准备
-
-- Rust（stable，MSVC 工具链）
-- Node.js 20+
-- WebView2 Runtime
-
-### 1. 安装前端依赖
-
-```powershell
-cd qshell-next
-npm install
-```
-
-### 2. 构建前端
-
-```powershell
-npm run build
-```
-
-### 3. 编译宿主程序
-
-```powershell
-cd ..\QShell-WinUI3
-pwsh .\sync-ui.ps1        # 将 qshell-next/dist 同步到 ui_dist
-cargo build --release    # 产物：target\release\QShell.exe
-```
-
-### 4. 打包安装程序（可选）
-
 ```powershell
 cd QShell-WinUI3
-npx --prefix ..\qshell-next tauri build --bundles nsis
+npm install
+npm run build
+npm run tauri build -- --bundles nsis
 ```
 
-产物位于 `QShell-WinUI3\target\release\bundle\nsis\`。
+产物：
+- 可执行文件：`QShell-WinUI3/src-tauri/target/release/QShell.exe`
+- 安装包：`QShell-WinUI3/src-tauri/target/release/bundle/nsis/QShell_<版本>_x64-setup.exe`
+
+## 系统要求
+
+- Windows 10 / 11 x64
+- WebView2 Runtime（Windows 11 自带）
+- 构建需要：Rust（MSVC 工具链）、Node.js 20+
 
 ## 第三方组件
 
@@ -81,9 +62,6 @@ npx --prefix ..\qshell-next tauri build --bundles nsis
 | `portable-pty` | MIT |
 | Vue 3 / Vite | MIT |
 | xterm.js | MIT |
-| lucide-vue-next | ISC |
-
-完整许可证见各依赖仓库。
 
 ## 免责声明
 
