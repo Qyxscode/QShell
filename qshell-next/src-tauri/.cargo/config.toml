@@ -1,2 +1,0 @@
-[env]
-CFLAGS = { value = "-DLIBSSH2_ECDSA_WINCNG=1", force = true }
