@@ -1,6 +1,6 @@
 [package]
 name = "qshell"
-version = "0.99.70"
+version = "0.99.71"
 description = "QShell"
 authors = ["you"]
 edition = "2024"
