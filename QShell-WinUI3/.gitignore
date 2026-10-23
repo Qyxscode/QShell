@@ -1,1 +1,42 @@
+# 构建产物
 /target
+/src-tauri/target
+/dist
+node_modules/
+*.pdb
+*.rlib
+*.rmeta
+
+# 安装包与可执行文件
+*.exe
+*.msi
+*.nsis.zip
+*.sig
+
+# 本地配置与密钥
+config.json
+config.json.bak
+*.pem
+*.key
+*.ppk
+id_rsa*
+id_ed25519*
+known_hosts
+
+# 日志与崩溃转储
+*.log
+*.dmp
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Tauri 生成
+/src-tauri/gen/schemas
+
+# 本地发版工具与更新清单
+latest.json
+打包发版.ps1
+打包发版.bat
