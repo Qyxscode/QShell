@@ -45,3 +45,7 @@ desktop.ini
 
 # 自动更新清单（作为 Release 附件上传，不进仓库）
 QShell-WinUI3/latest.json
+
+# 本地发版工具（含签名密钥路径，不进入仓库）
+QShell-WinUI3/打包发版.ps1
+QShell-WinUI3/打包发版.bat
