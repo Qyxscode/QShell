@@ -1,34 +1,35 @@
 {
-    "name":  "qshell",
-    "private":  true,
-    "version":  "0.99.73",
-    "type":  "module",
-    "scripts":  {
-                    "dev":  "vite",
-                    "build":  "vue-tsc --noEmit \u0026\u0026 vite build",
-                    "preview":  "vite preview",
-                    "tauri":  "tauri",
-                    "start":  "tauri dev"
-                },
-    "dependencies":  {
-                         "@rolldown/binding-win32-x64-msvc":  "^1.2.14",
-                         "@tauri-apps/api":  "^2",
-                         "@tauri-apps/plugin-dialog":  "^2.8.3",
-                         "@tauri-apps/plugin-opener":  "^2",
-                         "@xterm/addon-fit":  "^0.11.0",
-                         "@xterm/addon-webgl":  "^0.19.0",
-                         "@xterm/xterm":  "^6.0.0",
-                         "lucide-vue-next":  "^1.0.0",
-                         "tauri-plugin-snap-layout":  "^1.0.9",
-                         "vue":  "^3.5.13",
-                         "@tauri-apps/plugin-updater":  "^2",
-                         "@tauri-apps/plugin-process":  "^2"
-                     },
-    "devDependencies":  {
-                            "@tauri-apps/cli":  "^2",
-                            "@vitejs/plugin-vue":  "^6.0.7",
-                            "typescript":  "~6.0.3",
-                            "vite":  "^8.0.16",
-                            "vue-tsc":  "^3.3.5"
-                        }
+    "name": "qshell",
+    "private": true,
+    "version": "0.99.74",
+    "type": "module",
+    "scripts": {
+        "dev": "vite",
+        "build": "vue-tsc --noEmit && vite build",
+        "preview": "vite preview",
+        "tauri": "tauri",
+        "start": "tauri dev"
+    },
+    "dependencies": {
+        "@rolldown/binding-win32-x64-msvc": "^1.2.14",
+        "@tauri-apps/api": "^2",
+        "@tauri-apps/plugin-dialog": "^2.8.3",
+        "@tauri-apps/plugin-opener": "^2",
+        "@tauri-apps/plugin-process": "^2",
+        "@tauri-apps/plugin-updater": "^2",
+        "@xterm/addon-fit": "^0.11.0",
+        "@xterm/addon-search": "^0.16.0",
+        "@xterm/addon-webgl": "^0.19.0",
+        "@xterm/xterm": "^6.0.0",
+        "lucide-vue-next": "^1.0.0",
+        "tauri-plugin-snap-layout": "^1.0.9",
+        "vue": "^3.5.13"
+    },
+    "devDependencies": {
+        "@tauri-apps/cli": "^2",
+        "@vitejs/plugin-vue": "^6.0.7",
+        "typescript": "~6.0.3",
+        "vite": "^8.0.16",
+        "vue-tsc": "^3.3.5"
+    }
 }

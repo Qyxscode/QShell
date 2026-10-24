@@ -7,6 +7,18 @@ use std::io::{Read, Write};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProxyConfig {
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: Option<String>,
+    pub private_key: Option<String>,
+    pub passphrase: Option<String>,
+    #[serde(default)]
+    pub use_agent: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SshConnectParams {
     pub session_id: String,
     pub host: String,
@@ -23,6 +35,9 @@ pub struct SshConnectParams {
     /// 终端类型：auto / xterm-256color / xterm / vt220 / vt100 / linux / ansi
     #[serde(default)]
     pub term_type: Option<String>,
+    /// 跳板机（ProxyJump），为 None 时直连
+    #[serde(default)]
+    pub proxy: Option<ProxyConfig>,
 }
 
 /// 键盘交互式认证的应答器：服务器给几轮提示就回几次密码。
@@ -114,6 +129,201 @@ fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
 }
 
 /// 解析终端类型：`auto` 时探测服务器上存在的 terminfo，失败回退 xterm-256color。
+fn apply_session_prefs(sess: &ssh2::Session) {
+    // 优先启用现代 KEX / 主机密钥 / 加密算法，兼容新旧服务端
+    let _ = sess.method_pref(
+        ssh2::MethodType::Kex,
+        "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1",
+    );
+    let _ = sess.method_pref(
+        ssh2::MethodType::HostKey,
+        "rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-rsa",
+    );
+    let _ = sess.method_pref(
+        ssh2::MethodType::CryptCs,
+        "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc",
+    );
+    let _ = sess.method_pref(
+        ssh2::MethodType::CryptSc,
+        "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc",
+    );
+}
+
+fn authenticate(
+    sess: &ssh2::Session,
+    username: &str,
+    password: Option<&str>,
+    private_key: Option<&str>,
+    passphrase: Option<&str>,
+    use_agent: bool,
+) -> Result<(), String> {
+    if let Some(key_path) = private_key.filter(|k| !k.trim().is_empty()) {
+        let path = std::path::Path::new(key_path);
+        if path.is_file() {
+            let _ = sess.userauth_pubkey_file(username, None, path, passphrase);
+        }
+    }
+    if !sess.authenticated() && use_agent {
+        let _ = sess.userauth_agent(username);
+    }
+    if !sess.authenticated() {
+        if let Some(pwd) = password.filter(|p| !p.is_empty()) {
+            let _ = sess.userauth_password(username, pwd);
+        }
+    }
+    if !sess.authenticated() {
+        if let Some(pwd) = password.filter(|p| !p.is_empty()) {
+            let mut handler = PasswordPromptHandler { password: pwd };
+            let _ = sess.userauth_keyboard_interactive(username, &mut handler);
+        }
+    }
+    if !sess.authenticated() {
+        return Err("身份认证未通过，请检查用户名、密码、私钥或 SSH Agent".to_string());
+    }
+    Ok(())
+}
+
+fn open_direct_session(params: &SshConnectParams) -> Result<ssh2::Session, String> {
+    let tcp = connect_tcp(&params.host, params.port)?;
+    tcp.set_nodelay(true).ok();
+    let mut sess = ssh2::Session::new().map_err(|e| format!("初始化 SSH 会话失败: {}", e))?;
+    sess.set_tcp_stream(tcp);
+    sess.set_timeout(15000);
+    apply_session_prefs(&sess);
+    sess.handshake().map_err(|e| format!("SSH 握手失败: {}", e))?;
+    let _ = sess.set_keepalive(true, 30);
+    authenticate(
+        &sess,
+        &params.username,
+        params.password.as_deref(),
+        params.private_key.as_deref(),
+        params.passphrase.as_deref(),
+        params.use_agent.unwrap_or(false),
+    )?;
+    Ok(sess)
+}
+
+/// 连接目标主机：有跳板机时先连跳板，再在跳板通道上跑第二层 SSH。
+fn open_session(params: &SshConnectParams) -> Result<ssh2::Session, String> {
+    let proxy = match &params.proxy {
+        Some(p) if !p.host.trim().is_empty() => p,
+        _ => return open_direct_session(params),
+    };
+
+    // 1. 连接并认证跳板机
+    let jump = open_direct_session(&SshConnectParams {
+        session_id: String::new(),
+        host: proxy.host.clone(),
+        port: proxy.port,
+        username: proxy.username.clone(),
+        password: proxy.password.clone(),
+        private_key: proxy.private_key.clone(),
+        passphrase: proxy.passphrase.clone(),
+        cols: 80,
+        rows: 24,
+        use_agent: proxy.use_agent,
+        term_type: None,
+        proxy: None,
+    })
+    .map_err(|e| format!("跳板机连接失败: {}", e))?;
+
+    // 2. 在跳板机上开一条到目标的通道
+    let channel = jump
+        .channel_direct_tcpip(&params.host, params.port, None)
+        .map_err(|e| format!("跳板机转发通道建立失败: {}", e))?;
+
+    // 3. 本机监听一个随机端口，把目标会话的 TCP 流量经由该通道转发
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("跳板机本地中转监听失败: {}", e))?;
+    let local_addr = listener
+        .local_addr()
+        .map_err(|e| format!("读取本地中转地址失败: {}", e))?;
+
+    // 通道建立后改用短超时轮询，供双向转发
+    jump.set_timeout(30);
+    let _ = jump.set_blocking(false);
+
+    std::thread::spawn(move || {
+        if let Ok((tcp, _)) = listener.accept() {
+            pump_proxy_stream(tcp, channel);
+        }
+    });
+
+    // 4. 目标会话连接本地中转端口
+    let tcp = std::net::TcpStream::connect(local_addr)
+        .map_err(|e| format!("连接本地中转失败: {}", e))?;
+    tcp.set_nodelay(true).ok();
+
+    let mut target = ssh2::Session::new().map_err(|e| format!("初始化 SSH 会话失败: {}", e))?;
+    target.set_tcp_stream(tcp);
+    target.set_timeout(15000);
+    apply_session_prefs(&target);
+    target
+        .handshake()
+        .map_err(|e| format!("目标主机 SSH 握手失败: {}", e))?;
+    let _ = target.set_keepalive(true, 30);
+    authenticate(
+        &target,
+        &params.username,
+        params.password.as_deref(),
+        params.private_key.as_deref(),
+        params.passphrase.as_deref(),
+        params.use_agent.unwrap_or(false),
+    )
+    .map_err(|e| format!("目标主机{}", e))?;
+    Ok(target)
+}
+
+fn pump_proxy_stream(mut tcp: std::net::TcpStream, mut channel: ssh2::Channel) {
+    tcp.set_read_timeout(Some(std::time::Duration::from_millis(30))).ok();
+    tcp.set_write_timeout(Some(std::time::Duration::from_secs(15))).ok();
+    let mut buf = [0u8; 16 * 1024];
+    let mut pending: Vec<u8> = Vec::new();
+    loop {
+        match tcp.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => pending.extend_from_slice(&buf[..n]),
+            Err(ref e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+            Err(_) => break,
+        }
+        if !pending.is_empty() {
+            match channel.write(&pending) {
+                Ok(n) if n > 0 => {
+                    pending.drain(..n);
+                }
+                Ok(_) => {}
+                Err(ref e) if is_retryable_io(e) => {}
+                Err(_) => break,
+            }
+        }
+        match channel.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                if tcp.write_all(&buf[..n]).is_err() {
+                    break;
+                }
+            }
+            Err(ref e) if is_retryable_io(e) => {}
+            Err(_) => break,
+        }
+    }
+    let _ = channel.close();
+}
+
+fn is_retryable_io(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+    ) {
+        return true;
+    }
+    let message = error.to_string().to_lowercase();
+    message.contains("timed out")
+        || message.contains("would block")
+        || message.contains("eagain")
+        || message.contains("again")
+}
+
 fn resolve_term_type(requested: Option<&str>, sess: &ssh2::Session) -> String {
     let requested = requested.unwrap_or("auto").trim();
     if !requested.is_empty() && requested != "auto" {
@@ -150,80 +360,15 @@ pub async fn start_ssh_session(
     params: SshConnectParams,
 ) -> Result<String, String> {
     let session_id = params.session_id.clone();
-    let host = params.host.clone();
-    let port = params.port;
-    let username = params.username.clone();
-    let password = params.password.clone();
-    let private_key = params.private_key.clone();
-    let passphrase = params.passphrase.clone();
     let cols = params.cols;
     let rows = params.rows;
-    let use_agent = params.use_agent.unwrap_or(false);
     let term_type = params.term_type.clone();
 
     let sessions_map = state.sessions.clone();
     
     // 建连、握手与认证在阻塞线程中执行
     tokio::task::spawn_blocking(move || {
-        let tcp = connect_tcp(&host, port)?;
-        tcp.set_nodelay(true).ok();
-
-        let mut sess = ssh2::Session::new().map_err(|e| format!("初始化 SSH 会话失败: {}", e))?;
-        sess.set_tcp_stream(tcp);
-        sess.set_timeout(15000); // 15 秒读写超时
-        // 优先启用现代 KEX / 主机密钥算法，兼容新旧服务端
-        let _ = sess.method_pref(
-            ssh2::MethodType::Kex,
-            "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1",
-        );
-        let _ = sess.method_pref(
-            ssh2::MethodType::HostKey,
-            "rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-rsa",
-        );
-        let _ = sess.method_pref(
-            ssh2::MethodType::CryptCs,
-            "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc",
-        );
-        let _ = sess.method_pref(
-            ssh2::MethodType::CryptSc,
-            "aes128-ctr,aes192-ctr,aes256-ctr,aes128-cbc,aes256-cbc,3des-cbc",
-        );
-
-        sess.handshake().map_err(|e| format!("SSH 握手失败: {}", e))?;
-        let _ = sess.set_keepalive(true, 30);
-
-        if let Some(ref key_path) = private_key {
-            if !key_path.trim().is_empty() {
-                let p = std::path::Path::new(key_path);
-                if p.is_file() {
-                    let _ = sess.userauth_pubkey_file(&username, None, p, passphrase.as_deref());
-                }
-            }
-        }
-
-        // 系统 ssh-agent（需在主机配置里勾选）
-        if !sess.authenticated() && use_agent {
-            let _ = sess.userauth_agent(&username);
-        }
-
-        // 密码认证
-        if !sess.authenticated() {
-            if let Some(ref pwd) = password {
-                let _ = sess.userauth_password(&username, pwd);
-            }
-        }
-
-        // 键盘交互式：很多服务器（CentOS/Debian 默认配置）用它代替 PasswordAuthentication
-        if !sess.authenticated() {
-            if let Some(ref pwd) = password {
-                let mut handler = PasswordPromptHandler { password: pwd };
-                let _ = sess.userauth_keyboard_interactive(&username, &mut handler);
-            }
-        }
-
-        if !sess.authenticated() {
-            return Err("身份认证未通过，请检查用户名、密码、私钥或 SSH Agent".to_string());
-        }
+        let mut sess = open_session(&params)?;
 
         // SFTP uses a separate connection, created lazily on first use.
         let sftp_slot: Arc<Mutex<Option<SftpHandle>>> = Arc::new(Mutex::new(None));
@@ -279,6 +424,7 @@ pub async fn start_ssh_session(
                             || last_emit.elapsed() >= terminal_flush_interval(pending.len())
                         {
                             let event_name = format!("ssh-data-{}", sid);
+                            crate::session_log::log_chunk(&sid, &pending);
                             let _ = app_handle.emit(&event_name, pending.clone());
                             pending.clear();
                             last_emit = std::time::Instant::now();
@@ -289,6 +435,7 @@ pub async fn start_ssh_session(
                             && last_emit.elapsed() >= terminal_flush_interval(pending.len())
                         {
                             let event_name = format!("ssh-data-{}", sid);
+                            crate::session_log::log_chunk(&sid, &pending);
                             let _ = app_handle.emit(&event_name, pending.clone());
                             pending.clear();
                             last_emit = std::time::Instant::now();
@@ -299,6 +446,7 @@ pub async fn start_ssh_session(
                 }
             }
             if !pending.is_empty() {
+                crate::session_log::log_chunk(&sid, &pending);
                 let _ = app_handle.emit(&format!("ssh-data-{}", sid), pending);
             }
             let _ = app_handle.emit(&format!("ssh-closed-{}", sid), ());

@@ -544,3 +544,41 @@ SFTP 上传按钮使用项目自定义的本地文件浏览器，但下载按钮
 - **原因**：`.modal-card` 未限制最大高度，`.modal-body` 未设置滚动。
 - **修复**：端口转发弹窗加 `.forward-modal` 类，`max-height: 82vh`；`.modal-body` 设置 `min-height: 0; overflow-y: auto;`，底部按钮栏保持固定。
 - **状态**：已修复（v0.99.73）
+
+---
+
+## BUG-039 偏好设置内容过多时溢出弹窗高度，缺少滚动条（记录，待修复）
+
+- **发现时间**：2026-10-24
+- **现象**：偏好设置里设置自定义背景图后，会额外出现「模糊度」调节条，偏好设置内容总高度超过弹窗/窗体高度，底部选项被截断且无法滚动查看。
+- **原因**：偏好设置弹窗（`showTerminalSettingsModal`）的 `.modal-card` 没有限制最大高度，`.modal-body` 也没有滚动（与 BUG-038 同类问题）。
+- **计划修法**：
+  - 给偏好设置弹窗加独立类（如 `.settings-modal`），`max-height: 85vh`；
+  - `.modal-body` 设置 `min-height: 0; overflow-y: auto`，底部「取消 / 保存」按钮栏固定；
+  - 顺带检查其他内容可能增长的弹窗（主机编辑、备份、终端设置子项）是否也需要同样的滚动处理。
+- **状态**：已修复（偏好设置加 .settings-modal-card max-height 85vh，body 滚动）
+---
+
+## BUG-040 每次更新后开机自启失效、选项被取消勾选（记录，待排查）
+
+- **发现时间**：2026-10-24
+- **现象**：每次更新（安装新版本）后，偏好设置里的「开机时自动启动 QShell」自动变为未勾选，实际也不会开机启动。
+- **实现现状**：
+  - 自启通过 `tauri-plugin-autostart`（Windows 下写 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`）；
+  - `get_autostart_enabled` 调用 `app.autolaunch().is_enabled()` 读取；
+  - 安装器 `installer-hooks.nsh` 在 POSTUNINSTALL 中执行 `RmDir /r "$INSTDIR"`（删除安装目录），PREUNINSTALL 会 `taskkill QShell.exe`。
+- **可能原因**：
+  1. 升级时旧版卸载程序把安装目录（含 QShell.exe）删掉，注册表 Run 项指向的路径短暂失效；若新版本安装路径与旧版不同（或卸载后重装到新路径），`is_enabled()` 会判定为 false；
+  2. 卸载/升级流程中注册表 Run 项被清除（需确认 Tauri NSIS 模板或插件行为）；
+  3. 安装器 `taskkill` 与卸载顺序导致旧版清理逻辑误删自启项。
+- **排查方法（待用户执行）**：
+  ```powershell
+  Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' | Format-List
+  Get-ChildItem "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+  ```
+  记录更新前 / 更新后的 Run 项名称与路径，确认是「项被删除」还是「路径变化导致 is_enabled 为 false」。
+- **修复方向（待定位后确定）**：
+  - 若项被删除：在安装完成后（NSIS POSTINSTALL 或应用首次启动）若检测到用户曾启用自启，则自动重新注册；
+  - 若路径变化：自启注册时改用当前 exe 路径，并在启动时校验并修复 Run 项；
+  - 持久化用户意图（config.settings 中记录 autostart 偏好），升级后据此恢复。
+- **状态**：已修复（配置持久化 autostart_enabled + 启动时自动恢复）

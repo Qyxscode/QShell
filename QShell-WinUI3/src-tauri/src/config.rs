@@ -97,6 +97,19 @@ pub struct HostItem {
     pub serial_local_echo: Option<bool>,
     pub serial_dtr: Option<bool>,
     pub serial_rts: Option<bool>,
+    // 跳板机（ProxyJump）配置，留空表示直连
+    #[serde(default)]
+    pub proxy_host: Option<String>,
+    #[serde(default)]
+    pub proxy_port: Option<u16>,
+    #[serde(default)]
+    pub proxy_user: Option<String>,
+    #[serde(default)]
+    pub proxy_pwd: Option<String>,
+    #[serde(default)]
+    pub proxy_key: Option<String>,
+    #[serde(default)]
+    pub proxy_passphrase: Option<String>,
     /// 终端类型（auto / xterm-256color / xterm / vt220 / vt100 / linux / ansi）
     #[serde(default)]
     pub term_type: Option<String>,
@@ -159,6 +172,15 @@ pub struct AppSettings {
     pub terminal_bg_image_auto_fg: Option<bool>,
     pub accent_color: Option<String>,
     pub minimize_to_tray: Option<bool>,
+    /// 用户偏好的开机自启状态：用于升级/重装后自启项被清掉时自动恢复
+    #[serde(default)]
+    pub autostart_enabled: Option<bool>,
+    /// 是否记录终端会话日志
+    #[serde(default)]
+    pub session_log_enabled: Option<bool>,
+    /// 断线自动重连开关
+    #[serde(default)]
+    pub auto_reconnect: Option<bool>,
     pub webdav: Option<WebDavSettings>,
 }
 
