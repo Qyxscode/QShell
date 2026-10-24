@@ -6201,8 +6201,8 @@ body,
 
 .btn-exit-fullscreen {
   position: fixed;
-  top: 10px;
-  right: 16px;
+  right: 18px;
+  bottom: 14px;
   z-index: 2000;
   display: flex;
   align-items: center;
@@ -6214,7 +6214,7 @@ body,
   color: var(--text-main);
   font-size: 12px;
   cursor: pointer;
-  opacity: 0.75;
+  opacity: 0.35;
   transition: opacity 0.15s ease;
 }
 
@@ -6240,4 +6240,463 @@ body,
   color: var(--text-main);
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 路由追踪卡片按钮 */
+.card-trace-btn {
+  margin-left: 6px;
+  padding: 1px 8px;
+  height: 18px;
+  border-radius: 9px;
+  border: 1px solid var(--border-capsule);
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+  font-size: 10px;
+  line-height: 16px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.card-trace-btn:hover {
+  color: var(--text-main);
+  border-color: var(--border-card);
+}
+
+/* 路由追踪可视化弹窗 */
+.trace-modal {
+  width: 560px;
+  max-width: 92vw;
+  max-height: 82vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.trace-body {
+  padding: 14px 18px;
+  overflow-y: auto;
+}
+
+.trace-target-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.trace-target-label {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.trace-target-ip {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--text-main);
+}
+
+.trace-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-sub);
+  font-size: 12px;
+  padding: 20px 0;
+}
+
+.trace-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border-card);
+  border-top-color: var(--accent-color, #A8C7FA);
+  border-radius: 50%;
+  animation: trace-spin 0.8s linear infinite;
+}
+
+@keyframes trace-spin {
+  to { transform: rotate(360deg); }
+}
+
+.trace-error {
+  color: #f48771;
+  font-size: 12px;
+  padding: 16px 0;
+  word-break: break-all;
+}
+
+.trace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trace-hop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  animation: trace-hop-in 0.3s ease both;
+}
+
+.trace-hop.is-timeout {
+  opacity: 0.55;
+}
+
+.trace-hop-index {
+  width: 22px;
+  flex: none;
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.trace-hop-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.trace-hop-ip {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.trace-bar-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+
+.trace-bar {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.trace-bar.is-fast { background: #4ade80; }
+.trace-bar.is-mid { background: #fbbf24; }
+.trace-bar.is-slow { background: #f48771; }
+.trace-bar.is-timeout { background: transparent; }
+
+.trace-hop-rtt {
+  flex: none;
+  width: 150px;
+  text-align: right;
+  font-size: 10px;
+  color: var(--text-sub);
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+@keyframes trace-hop-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+/* 路由追踪按钮位置与尺寸（覆盖旧样式） */
+.card-row1-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.card-trace-btn {
+  margin-left: 0;
+  padding: 2px 10px;
+  height: 20px;
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.trace-hop-ip-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.trace-hop-location {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 右侧面板页签组 */
+.right-tab-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.right-tab-btn {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.right-tab-btn.active {
+  background: var(--bg-capsule);
+  border-color: var(--border-capsule);
+  color: var(--text-main);
+}
+
+.right-tab-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+
+/* 命令历史视图 */
+.history-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 8px;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+  flex: none;
+}
+
+.history-count {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.history-empty {
+  padding: 24px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-sub);
+  line-height: 1.6;
+}
+
+.history-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.history-item:hover {
+  background: var(--bg-capsule-hover);
+}
+
+.history-cmd {
+  flex: 1;
+  min-width: 0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-time {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-sub);
+}
+/* 右侧页签按钮：改为圆角矩形 + 主色填充（与程序按钮一致） */
+.right-tab-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.right-tab-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.right-tab-btn:hover:not(.active) {
+  color: var(--text-main);
+  border-color: var(--border-card);
+}
+/* 右栏页签：占满整行，按钮放大均分 */
+.right-tab-group {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+}
+
+.right-tab-btn {
+  flex: 1;
+  height: 28px;
+  padding: 0 12px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.right-tab-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.right-tab-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+/* 命令历史过滤按钮 */
+.history-filter-group {
+  display: flex;
+  gap: 4px;
+}
+
+.history-filter-btn {
+  padding: 2px 10px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.history-filter-btn.active {
+  background: var(--bg-capsule);
+  border-color: var(--border-color, var(--border-card));
+  color: var(--text-main);
+}
+
+.history-filter-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+/* 历史过滤按钮：与页签一致的圆角矩形 + 主色填充（覆盖旧样式） */
+.history-filter-group {
+  display: flex;
+  gap: 6px;
+}
+
+.history-filter-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.history-filter-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.history-filter-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+/* 历史条目：渐变分割线 + hover 高亮 */
+.history-item {
+  position: relative;
+  padding: 7px 8px;
+  border-radius: 4px;
+}
+
+.history-item:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.10) 25%,
+    rgba(255, 255, 255, 0.10) 75%,
+    transparent
+  );
+  pointer-events: none;
+}
+
+.history-item:hover {
+  background: var(--bg-capsule-hover);
+}
+/* 历史工具条：保证过滤按钮、计数、清空按钮三者间距稳定 */
+.history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 4px;
+  flex: none;
+}
+
+.history-toolbar .history-count {
+  flex: 1;
+  text-align: center;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.history-toolbar .btn-sftp-action {
+  flex: none;
+  height: 26px;
+  padding: 0 18px;
+  font-size: 12px;
+}
+
+/* 历史分割线加强可见度 */
+.history-item:not(:last-child)::after {
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.16) 20%,
+    rgba(255, 255, 255, 0.16) 80%,
+    transparent
+  );
+}
+
+.history-item:hover {
+  background: rgba(255, 255, 255, 0.05);
 }
