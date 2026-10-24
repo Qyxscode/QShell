@@ -9,6 +9,7 @@ mod backup;
 mod traffic;
 mod local_fs;
 mod keygen;
+mod session_log;
 pub mod generic_terminal;
 
 use ssh::{SshManager, start_ssh_session, write_ssh_session, resize_ssh_session, close_ssh_session};
@@ -19,12 +20,13 @@ use traffic::audit_host_traffic;
 use sftp::{
     list_sftp_files, sftp_mkdir, sftp_remove, sftp_rename,
     sftp_chmod, sftp_stat, sftp_upload_file, sftp_download_file,
-    sftp_home_dir, cancel_sftp_transfer
+    sftp_home_dir, cancel_sftp_transfer, sftp_sync_directory
 };
 use port_forward::{PortForwardManager, start_local_forward, stop_local_forward, list_running_forwards};
 use monitor::fetch_system_metrics;
 use local_fs::{list_local_dir, local_roots, local_known_folders, local_path_exists, read_local_image_data_url, local_image_thumbnail};
 use keygen::{generate_ssh_key, inspect_ssh_key};
+use session_log::{set_session_logging, get_session_logging};
 use backup::{
     export_local_backup, import_local_backup, test_webdav_connection,
     webdav_upload_backup, webdav_download_backup
@@ -507,6 +509,7 @@ pub fn run() {
             sftp_upload_file,
             sftp_download_file,
             cancel_sftp_transfer,
+            sftp_sync_directory,
             apply_window_rounding,
             list_local_dir,
             local_roots,
@@ -516,6 +519,8 @@ pub fn run() {
             local_image_thumbnail,
             generate_ssh_key,
             inspect_ssh_key,
+            set_session_logging,
+            get_session_logging,
             fetch_system_metrics,
             audit_host_traffic,
             quit_app,

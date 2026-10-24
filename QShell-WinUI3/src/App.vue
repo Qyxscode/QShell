@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, shallowReactive } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { SearchAddon } from "@xterm/addon-search";
 import "@xterm/xterm/css/xterm.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -397,7 +398,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.73");
+const appVersion = ref("0.99.74");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -501,6 +502,12 @@ interface HostItem {
   serial_dtr?: boolean;
   serial_rts?: boolean;
   local_shell?: "powershell" | "cmd";
+  proxy_host?: string;
+  proxy_port?: number;
+  proxy_user?: string;
+  proxy_pwd?: string;
+  proxy_key?: string;
+  proxy_passphrase?: string;
   term_type?: string;
   use_agent?: boolean;
   details?: HostDetails;
@@ -541,6 +548,7 @@ interface SessionTab {
   host: HostItem;
   termInstance?: Terminal;
   fitInstance?: FitAddon;
+  searchInstance?: SearchAddon;
   resizeObserver?: ResizeObserver;
   unlisten?: UnlistenFn;
   alive: boolean;
@@ -550,6 +558,8 @@ interface SessionTab {
   read_only?: boolean;
   net_if?: string;
   runtimePassword?: string;
+  reconnectTimer?: number | null;
+  reconnectAttempts?: number;
 }
 
 const sessions = ref<SessionTab[]>([]);
@@ -923,6 +933,7 @@ const localPickerRoots = ref<LocalFileEntry[]>([]);
 const localKnownFolders = ref<Array<{ id: string; name: string; path: string; icon: string }>>([]);
 const localPickerMode = ref<"files" | "drives" | "network">("files");
 const localPickerAction = ref<"open" | "save">("open");
+const localPickerPickDir = ref(false);
 const localPickerTitle = ref("选择文件");
 const localPickerFileName = ref("");
 const localPickerSelected = ref<LocalFileEntry | null>(null);
@@ -985,6 +996,7 @@ function toggleTransferMonitor(e?: MouseEvent) {
 
 function handleGlobalClick(e: MouseEvent) {
   closeContextMenu();
+  closeLocalPickerMenu();
   const target = e.target as HTMLElement | null;
   if (!target) return;
 
@@ -1102,7 +1114,7 @@ const contextMenu = ref({
   show: false,
   x: 0,
   y: 0,
-  targetType: "" as "host" | "group" | "tab" | "terminal" | "sftp_item" | "sftp_bg" | "memo_item" | "memo_group" | "memo_bg" | "",
+  targetType: "" as "host" | "group" | "tab" | "terminal" | "sftp_item" | "sftp_bg" | "memo_item" | "memo_group" | "memo_bg" | "input" | "",
   targetHost: null as HostItem | null,
   targetGroup: null as DeviceGroup | null,
   targetTab: null as SessionTab | null,
@@ -1201,6 +1213,12 @@ const hostModal = ref({
     name: "",
     protocol: 'ssh' as 'ssh' | 'telnet' | 'serial' | 'local',
     local_shell: 'powershell' as 'powershell' | 'cmd',
+    proxy_host: '',
+    proxy_port: 22,
+    proxy_user: 'root',
+    proxy_pwd: '',
+    proxy_key: '',
+    proxy_passphrase: '',
     host: "",
     port: 22,
     user: "root",
@@ -1431,11 +1449,119 @@ const terminalBgImageLuminance = ref(0);
 const showTerminalSettingsModal = ref(false);
 const autostartEnabled = ref(false);
 
+// --- 终端搜索（Ctrl+F）---
+const terminalSearch = ref({ show: false, query: "", caseSensitive: false });
+
+function openTerminalSearch() {
+  const tab = activeSession.value;
+  if (!tab?.searchInstance) return;
+  terminalSearch.value.show = true;
+  void nextTick(() => {
+    const input = document.getElementById("terminal-search-input") as HTMLInputElement | null;
+    input?.focus();
+    input?.select();
+  });
+}
+
+function closeTerminalSearch() {
+  terminalSearch.value.show = false;
+  activeSession.value?.termInstance?.focus();
+}
+
+function runTerminalSearch(forward = true) {
+  const addon = activeSession.value?.searchInstance;
+  const query = terminalSearch.value.query;
+  if (!addon || !query) return;
+  const options = { caseSensitive: terminalSearch.value.caseSensitive };
+  if (forward) {
+    addon.findNext(query, options);
+  } else {
+    addon.findPrevious(query, options);
+  }
+}
+// 用户偏好的自启状态：升级后系统自启项可能被清掉，用它来自动恢复
+const autostartPreferred = ref<boolean | null>(null);
+
+// --- 断线自动重连 ---
+const autoReconnectEnabled = ref(true);
+const AUTO_RECONNECT_DELAYS = [3000, 6000, 12000, 24000, 30000];
+
+function cancelAutoReconnect(tab: SessionTab) {
+  if (tab.reconnectTimer) {
+    window.clearTimeout(tab.reconnectTimer);
+    tab.reconnectTimer = null;
+  }
+}
+
+function scheduleAutoReconnect(tab: SessionTab) {
+  if (!autoReconnectEnabled.value || !isTauri) return;
+  if (tab.host?.protocol !== "ssh") return;
+  if (tab.is_locked) return;
+  if (!sessions.value.some(s => s.id === tab.id)) return;
+  cancelAutoReconnect(tab);
+  const attempt = (tab.reconnectAttempts || 0) + 1;
+  if (attempt > AUTO_RECONNECT_DELAYS.length) {
+    tab.termInstance?.writeln("\x1b[31m[自动重连已达到最大重试次数，请手动按回车重试]\x1b[0m");
+    return;
+  }
+  tab.reconnectAttempts = attempt;
+  const delay = AUTO_RECONNECT_DELAYS[attempt - 1];
+  tab.termInstance?.writeln(`\x1b[36m[${Math.round(delay / 1000)} 秒后自动重连（第 ${attempt} 次）...]\x1b[0m`);
+  tab.reconnectTimer = window.setTimeout(() => {
+    tab.reconnectTimer = null;
+    if (!sessions.value.some(s => s.id === tab.id)) return;
+    if (tab.alive || tab.is_connecting) return;
+    void reconnectSession(tab);
+  }, delay);
+}
+
+async function updateAutoReconnect(enabled: boolean) {
+  autoReconnectEnabled.value = enabled;
+  if (configData.value.settings) {
+    configData.value.settings.auto_reconnect = enabled;
+    try {
+      await invoke("save_hosts_config", { config: configData.value });
+    } catch (error) {
+      console.warn("[reconnect] 保存自动重连偏好失败:", error);
+    }
+  }
+}
+// --- 终端会话日志录制 ---
+const sessionLogEnabled = ref(false);
+
+async function updateSessionLogging(enabled: boolean) {
+  const previous = sessionLogEnabled.value;
+  sessionLogEnabled.value = enabled;
+  try {
+    await invoke("set_session_logging", { enabled });
+    if (configData.value.settings) {
+      configData.value.settings.session_log_enabled = enabled;
+      try {
+        await invoke("save_hosts_config", { config: configData.value });
+      } catch (error) {
+        console.warn("[log] 保存会话日志偏好失败:", error);
+      }
+    }
+  } catch (error) {
+    sessionLogEnabled.value = previous;
+    console.warn("[log] 修改会话日志开关失败:", error);
+  }
+}
+
 async function updateAutostart(enabled: boolean) {
   const previous = autostartEnabled.value;
   autostartEnabled.value = enabled;
   try {
     await invoke("set_autostart_enabled", { enabled });
+    autostartPreferred.value = enabled;
+    if (configData.value.settings) {
+      configData.value.settings.autostart_enabled = enabled;
+      try {
+        await invoke("save_hosts_config", { config: configData.value });
+      } catch (error) {
+        console.warn("[autostart] 保存自启偏好失败:", error);
+      }
+    }
   } catch (error) {
     autostartEnabled.value = previous;
     console.warn("[autostart] 修改开机自启失败:", error);
@@ -1669,6 +1795,12 @@ function openAddHostModal(modeOrEvent?: 'all' | 'connection' | Event, targetGrou
       name: "新服务器",
       protocol: "ssh" as "ssh" | "telnet" | "serial" | "local",
       local_shell: "powershell" as "powershell" | "cmd",
+      proxy_host: "",
+      proxy_port: 22,
+      proxy_user: "root",
+      proxy_pwd: "",
+      proxy_key: "",
+      proxy_passphrase: "",
       host: "127.0.0.1",
       port: 22,
       user: "root",
@@ -1721,6 +1853,12 @@ function openEditHostModal(h: HostItem, mode: 'all' | 'connection' | 'asset' = '
     form: {
       protocol: (h.protocol || "ssh") as "ssh" | "telnet" | "serial" | "local",
       local_shell: (h.local_shell || "powershell") as "powershell" | "cmd",
+      proxy_host: h.proxy_host || '',
+      proxy_port: h.proxy_port ?? 22,
+      proxy_user: h.proxy_user || 'root',
+      proxy_pwd: h.proxy_pwd || '',
+      proxy_key: h.proxy_key || '',
+      proxy_passphrase: h.proxy_passphrase || '',
       name: h.name,
       host: h.host,
       port: h.port,
@@ -1831,6 +1969,12 @@ async function saveHostForm() {
       orig.serial_local_echo = f.protocol === 'serial' ? f.serial_local_echo : undefined;
       orig.serial_dtr = f.protocol === 'serial' ? f.serial_dtr : undefined;
       orig.serial_rts = f.protocol === 'serial' ? f.serial_rts : undefined;
+      orig.proxy_host = f.protocol === 'ssh' ? (f.proxy_host || undefined) : undefined;
+      orig.proxy_port = f.protocol === 'ssh' ? (f.proxy_port || undefined) : undefined;
+      orig.proxy_user = f.protocol === 'ssh' ? (f.proxy_user || undefined) : undefined;
+      orig.proxy_pwd = f.protocol === 'ssh' ? (f.proxy_pwd || undefined) : undefined;
+      orig.proxy_key = f.protocol === 'ssh' ? (f.proxy_key || undefined) : undefined;
+      orig.proxy_passphrase = f.protocol === 'ssh' ? (f.proxy_passphrase || undefined) : undefined;
     } else {
       // 全部
       orig.name = f.name;
@@ -1849,6 +1993,12 @@ async function saveHostForm() {
       orig.serial_local_echo = f.protocol === 'serial' ? f.serial_local_echo : undefined;
       orig.serial_dtr = f.protocol === 'serial' ? f.serial_dtr : undefined;
       orig.serial_rts = f.protocol === 'serial' ? f.serial_rts : undefined;
+      orig.proxy_host = f.protocol === 'ssh' ? (f.proxy_host || undefined) : undefined;
+      orig.proxy_port = f.protocol === 'ssh' ? (f.proxy_port || undefined) : undefined;
+      orig.proxy_user = f.protocol === 'ssh' ? (f.proxy_user || undefined) : undefined;
+      orig.proxy_pwd = f.protocol === 'ssh' ? (f.proxy_pwd || undefined) : undefined;
+      orig.proxy_key = f.protocol === 'ssh' ? (f.proxy_key || undefined) : undefined;
+      orig.proxy_passphrase = f.protocol === 'ssh' ? (f.proxy_passphrase || undefined) : undefined;
       orig.details = {
         ...orig.details,
         memo: f.memo,
@@ -1927,6 +2077,12 @@ async function saveHostForm() {
           found.serial_dtr = orig.serial_dtr;
           found.serial_rts = orig.serial_rts;
           found.local_shell = orig.local_shell;
+          found.proxy_host = orig.proxy_host;
+          found.proxy_port = orig.proxy_port;
+          found.proxy_user = orig.proxy_user;
+          found.proxy_pwd = orig.proxy_pwd;
+          found.proxy_key = orig.proxy_key;
+          found.proxy_passphrase = orig.proxy_passphrase;
         } else {
           found.name = orig.name;
           found.protocol = orig.protocol;
@@ -1945,6 +2101,12 @@ async function saveHostForm() {
           found.serial_dtr = orig.serial_dtr;
           found.serial_rts = orig.serial_rts;
           found.local_shell = orig.local_shell;
+          found.proxy_host = orig.proxy_host;
+          found.proxy_port = orig.proxy_port;
+          found.proxy_user = orig.proxy_user;
+          found.proxy_pwd = orig.proxy_pwd;
+          found.proxy_key = orig.proxy_key;
+          found.proxy_passphrase = orig.proxy_passphrase;
           found.term_type = orig.term_type;
           found.use_agent = orig.use_agent;
           found.details = orig.details;
@@ -1972,6 +2134,12 @@ async function saveHostForm() {
       serial_dtr: f.protocol === 'serial' ? f.serial_dtr : undefined,
       serial_rts: f.protocol === 'serial' ? f.serial_rts : undefined,
       local_shell: f.protocol === 'local' ? f.local_shell : undefined,
+      proxy_host: f.protocol === 'ssh' ? f.proxy_host : undefined,
+      proxy_port: f.protocol === 'ssh' ? f.proxy_port : undefined,
+      proxy_user: f.protocol === 'ssh' ? f.proxy_user : undefined,
+      proxy_pwd: f.protocol === 'ssh' ? f.proxy_pwd : undefined,
+      proxy_key: f.protocol === 'ssh' ? f.proxy_key : undefined,
+      proxy_passphrase: f.protocol === 'ssh' ? f.proxy_passphrase : undefined,
       term_type: f.protocol === 'serial' || f.protocol === 'local' ? undefined : (f.term_type || "auto"),
       use_agent: f.protocol === 'ssh' ? !!f.use_agent : undefined,
       details: {
@@ -3730,6 +3898,9 @@ async function loadConfig() {
       if (cfg.settings.terminal_fg_color) terminalSettings.value.terminal_fg_color = cfg.settings.terminal_fg_color;
       if (cfg.settings.terminal_bg_color) terminalSettings.value.terminal_bg_color = cfg.settings.terminal_bg_color;
       if (cfg.settings.minimize_to_tray !== undefined) terminalSettings.value.minimize_to_tray = !!cfg.settings.minimize_to_tray;
+      if (cfg.settings.autostart_enabled !== undefined) autostartPreferred.value = !!cfg.settings.autostart_enabled;
+      if (cfg.settings.session_log_enabled !== undefined) sessionLogEnabled.value = !!cfg.settings.session_log_enabled;
+      if (cfg.settings.auto_reconnect !== undefined) autoReconnectEnabled.value = !!cfg.settings.auto_reconnect;
       if (cfg.settings.accent_color) terminalSettings.value.accent_color = cfg.settings.accent_color;
       if (cfg.settings.terminal_bg_image_fit) {
         terminalSettings.value.bg_image_fit = cfg.settings.terminal_bg_image_fit;
@@ -4184,6 +4355,9 @@ async function openSession(h: HostItem) {
 
   const fit = new FitAddon();
   term.loadAddon(fit);
+  const searchAddon = new SearchAddon();
+  term.loadAddon(searchAddon);
+  newTab.searchInstance = searchAddon;
   term.open(mountEl);
   fit.fit();
   term.focus();
@@ -4213,6 +4387,13 @@ async function openSession(h: HostItem) {
         e.stopPropagation();
         return false;
       }
+    }
+    // 终端搜索：Ctrl+F
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && key === "f") {
+      e.preventDefault();
+      e.stopPropagation();
+      openTerminalSearch();
+      return false;
     }
     // 复制快捷键：Ctrl+Shift+C 或 Ctrl+Insert
     if ((e.ctrlKey && e.shiftKey && key === "c") || (e.ctrlKey && key === "insert")) {
@@ -4282,6 +4463,7 @@ async function openSession(h: HostItem) {
       }
 
       term.writeln("\r\n\x1b[33m[终端连接已断开。按回车键重新连接...]\x1b[0m\r\n");
+      scheduleAutoReconnect(newTab);
     });
 
     await doStartSsh(newTab);
@@ -4407,12 +4589,24 @@ async function doStartSsh(tab: SessionTab) {
           cols: term.cols || 80,
           rows: term.rows || 24,
           use_agent: !!h.use_agent,
+          proxy: h.proxy_host?.trim()
+            ? {
+                host: h.proxy_host.trim(),
+                port: h.proxy_port || 22,
+                username: h.proxy_user || "root",
+                password: h.proxy_pwd || null,
+                private_key: h.proxy_key || null,
+                passphrase: h.proxy_passphrase || null,
+                use_agent: false,
+              }
+            : null,
           term_type: h.term_type || "auto",
         }
       });
     }
     tab.alive = true;
     tab.is_connecting = false;
+    tab.reconnectAttempts = 0;
 
     // 监听视口尺寸变化 (防抖过滤高频重排与 IPC 通信，大幅提升窗口缩放帧率)
     if (!tab.resizeObserver && fit && (term as any).element?.parentElement) {
@@ -4664,6 +4858,7 @@ function switchSession(sid: string) {
 
 function closeSession(tab: SessionTab) {
   if (tab.is_locked) return; // 锁定状态禁止关闭
+  cancelAutoReconnect(tab);
   if (tab.resizeObserver) tab.resizeObserver.disconnect();
   if (tab.unlisten) tab.unlisten();
   if (tab.termInstance) tab.termInstance.dispose();
@@ -4871,6 +5066,63 @@ function isSftpSelected(item: SftpFileItem): boolean {
   return selectedSftpFiles.value.some((f) => f.name === item.name);
 }
 
+let contextField: HTMLInputElement | HTMLTextAreaElement | null = null;
+
+function handleAppContextMenu(event: MouseEvent) {
+  const target = event.target as HTMLElement | null;
+  const field = target?.closest("input, textarea, [contenteditable='true']") as HTMLInputElement | HTMLTextAreaElement | null;
+  event.preventDefault();
+  if (field) {
+    // 右键不会改变 activeElement，记录命中的输入框供菜单动作使用
+    contextField = field;
+    try {
+      field.focus({ preventScroll: true });
+    } catch {
+      field.focus();
+    }
+    contextMenu.value = {
+      ...contextMenu.value,
+      show: true,
+      x: event.clientX,
+      y: event.clientY,
+      targetType: "input",
+    };
+  }
+}
+
+function inputContextAction(action: "cut" | "copy" | "paste" | "selectAll") {
+  const el = contextField;
+  closeContextMenu();
+  if (!el) return;
+  const start = el.selectionStart ?? 0;
+  const end = el.selectionEnd ?? 0;
+  if (action === "selectAll") {
+    el.select();
+    return;
+  }
+  if (action === "copy" || action === "cut") {
+    const text = el.value.slice(start, end);
+    if (text) void writeClipboardText(text);
+    if (action === "cut" && text) {
+      el.value = el.value.slice(0, start) + el.value.slice(end);
+      el.setSelectionRange(start, start);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    return;
+  }
+  if (action === "paste") {
+    void readClipboardText().then((text) => {
+      if (!text) return;
+      const s = el.selectionStart ?? el.value.length;
+      const e = el.selectionEnd ?? el.value.length;
+      el.value = el.value.slice(0, s) + text + el.value.slice(e);
+      const pos = s + text.length;
+      el.setSelectionRange(pos, pos);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+}
+
 function handleSftpItemKeydown(event: KeyboardEvent, item: SftpFileItem, index: number) {
   if (event.key === "Enter") {
     event.preventDefault();
@@ -5031,6 +5283,7 @@ async function uploadLocalPath(localPath: string) {
 
   const taskId = makeTaskId("up");
 
+  transferPopoverTargetRight.value = 300;
   showTransferMonitor.value = true;
   activeTransfers.value.push({
     task_id: taskId,
@@ -5066,8 +5319,64 @@ async function uploadLocalPath(localPath: string) {
 }
 
 // SFTP 文件上传 (按钮触发，使用应用内文件选择器)
-async function sftpTriggerUpload() {
-  closeContextMenu();
+// --- SFTP 目录同步（镜像上传）---
+const dirSyncModal = ref({ show: false, localDir: "", remoteDir: "", skipExisting: true });
+
+function openDirSyncModal() {
+  dirSyncModal.value = {
+    show: true,
+    localDir: "",
+    remoteDir: currentSftpPath.value || "/",
+    skipExisting: true,
+  };
+}
+
+async function chooseSyncLocalDir() {
+  try {
+    const selected = await openLocalFileBrowser({
+      action: "open",
+      title: "选择要同步的本地目录",
+      pickDir: true,
+    });
+    if (selected) {
+      dirSyncModal.value.localDir = selected;
+    }
+  } catch (error) {
+    console.warn("[sftp] 选择本地目录失败:", error);
+  }
+}
+
+async function startDirSync() {
+  const m = dirSyncModal.value;
+  const sess = activeSession.value;
+  if (!sess || !m.localDir.trim() || !m.remoteDir.trim()) return;
+  const taskId = `sync_${Date.now()}`;
+  m.show = false;
+  // 延迟到本次 click 事件结束后再弹，否则会被 handleGlobalClick 立即收起
+  window.setTimeout(() => {
+    transferPopoverTargetRight.value = 300;
+    showTransferMonitor.value = true;
+  }, 0);
+  try {
+    await invoke("sftp_sync_directory", {
+      sessionId: sess.id,
+      localDir: m.localDir.trim(),
+      remoteDir: m.remoteDir.trim(),
+      taskId,
+      skipExisting: m.skipExisting,
+    });
+  } catch (error: any) {
+    console.warn("[sftp] 目录同步失败:", error);
+  } finally {
+    try {
+      await fetchSftpFiles(currentSftpPath.value);
+    } catch (refreshError) {
+      console.warn("[sftp] 同步后刷新目录失败:", refreshError);
+    }
+  }
+}
+
+async function sftpTriggerUpload() {  closeContextMenu();
   if (!activeSessionId.value) return;
   const path = await openLocalFileBrowser({
     action: "open",
@@ -5085,6 +5394,54 @@ function finishLocalFileBrowser(path: string | null) {
 
 function cancelLocalFileBrowser() {
   finishLocalFileBrowser(null);
+}
+
+const localPickerMenu = ref({ show: false, x: 0, y: 0, entry: null as LocalFileEntry | null });
+const localPickerProps = ref({ show: false, name: "", path: "", isDir: false, size: 0 });
+
+function openLocalPickerContextMenu(event: MouseEvent, entry: LocalFileEntry) {
+  event.stopPropagation();
+  localPickerMenu.value = { show: true, x: event.clientX, y: event.clientY, entry };
+}
+
+function closeLocalPickerMenu() {
+  localPickerMenu.value.show = false;
+}
+
+function localPickerMenuOpen() {
+  const entry = localPickerMenu.value.entry;
+  closeLocalPickerMenu();
+  if (!entry) return;
+  if (entry.is_dir) void loadLocalDir(entry.path);
+  else localPickerChoose(entry);
+}
+
+function localPickerMenuCopyPath() {
+  const entry = localPickerMenu.value.entry;
+  closeLocalPickerMenu();
+  if (entry) void writeClipboardText(entry.path);
+}
+
+function localPickerMenuRefresh() {
+  closeLocalPickerMenu();
+  void loadLocalDir(localPickerPath.value);
+}
+
+function localPickerMenuProps() {
+  const entry = localPickerMenu.value.entry;
+  closeLocalPickerMenu();
+  if (!entry) return;
+  localPickerProps.value = {
+    show: true,
+    name: entry.name,
+    path: entry.path,
+    isDir: entry.is_dir,
+    size: entry.size,
+  };
+}
+function confirmLocalDirPicker() {
+  if (!localPickerPath.value) return;
+  finishLocalFileBrowser(localPickerPath.value);
 }
 
 // 只允许"单个文件名"：去掉任何路径分隔符与非法字符，防止 ../ 或绝对路径逃逸出所选目录。
@@ -5110,11 +5467,13 @@ async function openLocalFileBrowser(options: {
   action: "open" | "save";
   title: string;
   defaultName?: string;
+  pickDir?: boolean;
 }) {
   // 若之前还有未结束的选择器，先取消，避免 Promise 悬挂。
   if (localPickerResolve) finishLocalFileBrowser(null);
 
   localPickerAction.value = options.action;
+  localPickerPickDir.value = !!options.pickDir;
   localPickerTitle.value = options.title;
   localPickerFileName.value = options.defaultName || "";
   localPickerSelected.value = null;
@@ -5179,6 +5538,7 @@ async function loadLocalPickerThumbnails(entries: LocalFileEntry[], token: numbe
 }
 
 async function loadLocalDir(path: string) {
+  closeLocalPickerMenu();
   if (!path) return;
   const token = ++localPickerDirToken;
   localPickerLoading.value = true;
@@ -5232,6 +5592,7 @@ function localPickerParent() {
 }
 
 function localPickerChoose(entry: LocalFileEntry) {
+  closeLocalPickerMenu();
   if (entry.is_dir) {
     loadLocalDir(entry.path);
   } else if (localPickerAction.value === "save") {
@@ -5287,6 +5648,7 @@ async function sftpTriggerDownload(item: SftpFileItem): Promise<boolean> {
   const taskId = makeTaskId("down");
   const sessionId = activeSessionId.value;
 
+  transferPopoverTargetRight.value = 300;
   showTransferMonitor.value = true;
   activeTransfers.value.push({
     task_id: taskId,
@@ -5981,6 +6343,20 @@ onMounted(async () => {
     try {
       launchedByAutostart = await invoke<boolean>("is_autostart_launch");
       autostartEnabled.value = await invoke<boolean>("get_autostart_enabled");
+      // 升级/重装后系统自启项可能被清掉：按用户偏好自动恢复
+      if (autostartPreferred.value === true && !autostartEnabled.value) {
+        try {
+          await invoke("set_autostart_enabled", { enabled: true });
+          autostartEnabled.value = true;
+        } catch (restoreError) {
+          console.warn("[autostart] 恢复开机自启失败:", restoreError);
+        }
+      }
+      try {
+        await invoke("set_session_logging", { enabled: sessionLogEnabled.value });
+      } catch (logError) {
+        console.warn("[log] 初始化会话日志失败:", logError);
+      }
     } catch (error) {
       console.warn("[autostart] 读取开机自启状态失败:", error);
     }
@@ -6113,7 +6489,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-root" @contextmenu.prevent>
+  <div class="app-root" @contextmenu="handleAppContextMenu">
     <!-- 顶部标题栏 (1:1 像素级复刻原版设计) -->
     <header class="title-bar" @mousedown="startDragging" @dblclick="onTitleBarDoubleClick">
       <div class="brand">
@@ -6528,6 +6904,29 @@ onUnmounted(() => {
             @contextmenu.prevent="openContextMenu($event, 'terminal')"
           >
             <div v-if="activeSession?.read_only" class="terminal-readonly-badge">只读模式</div>
+            <div v-if="terminalSearch.show" class="terminal-search-bar">
+              <input
+                id="terminal-search-input"
+                v-model="terminalSearch.query"
+                class="terminal-search-input"
+                placeholder="搜索终端（Enter 下一个 / Shift+Enter 上一个）"
+                @input="runTerminalSearch(true)"
+                @keydown.enter.prevent="runTerminalSearch(!$event.shiftKey)"
+                @keydown.esc.prevent="closeTerminalSearch"
+              />
+              <label class="terminal-search-case" title="区分大小写">
+                <input
+                  type="checkbox"
+                  v-model="terminalSearch.caseSensitive"
+                  class="md3-check-native"
+                  @change="runTerminalSearch(true)"
+                />
+                Aa
+              </label>
+              <button class="terminal-search-btn" title="上一个" @click="runTerminalSearch(false)">↑</button>
+              <button class="terminal-search-btn" title="下一个" @click="runTerminalSearch(true)">↓</button>
+              <button class="terminal-search-btn" title="关闭（Esc）" @click="closeTerminalSearch">✕</button>
+            </div>
             <div v-if="sessions.length === 0" class="empty-state">
               <div class="empty-icon-wrap">
                 <svg class="empty-desktop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -6675,6 +7074,10 @@ onUnmounted(() => {
               <button class="btn-sftp-footer" :disabled="!canUseSftp || selectedSftpFiles.filter(f => !f.is_dir).length === 0" @click="sftpTriggerDownloadSelected">
                 <Icons name="arrow-down" size="14" />
                 <span>下载选中{{ selectedSftpFiles.filter(f => !f.is_dir).length > 1 ? ` (${selectedSftpFiles.filter(f => !f.is_dir).length})` : '' }}</span>
+              </button>
+              <button class="btn-sftp-footer" :disabled="!canUseSftp" @click="openDirSyncModal" title="把本地目录整体同步到远端当前目录">
+                <Icons name="cloud" size="14" />
+                <span>同步目录</span>
               </button>
             </div>
           </div>
@@ -7050,6 +7453,13 @@ onUnmounted(() => {
       </template>
 
       <!-- SFTP 文件条目右键选项 -->
+      <template v-else-if="contextMenu.targetType === 'input'">
+        <div class="menu-item" @click="inputContextAction('cut')">剪切</div>
+        <div class="menu-item" @click="inputContextAction('copy')">复制</div>
+        <div class="menu-item" @click="inputContextAction('paste')">粘贴</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item" @click="inputContextAction('selectAll')">全选</div>
+      </template>
       <template v-else-if="contextMenu.targetType === 'sftp_item'">
         <div v-if="!contextMenu.targetSftpItem?.is_dir" class="menu-item" @click="sftpTriggerDownload(contextMenu.targetSftpItem!)">下载文件到本地</div>
         <div class="menu-item" @click="sftpOpenRename(contextMenu.targetSftpItem!)">重命名</div>
@@ -7088,7 +7498,7 @@ onUnmounted(() => {
     <!-- 应用内文件选择器：替代 Windows 原生文件框 -->
     <Teleport to="body">
     <Transition name="modal-fade">
-      <div v-if="showLocalFilePicker" class="modal-overlay local-picker-overlay" @mousedown.self="cancelLocalFileBrowser">
+      <div v-if="showLocalFilePicker" class="modal-overlay local-picker-overlay" @mousedown.self="cancelLocalFileBrowser" @contextmenu.prevent="closeLocalPickerMenu">
       <div class="modal-card local-picker-modal">
         <div class="modal-header">
           <span class="modal-title">{{ localPickerTitle }}</span>
@@ -7172,6 +7582,7 @@ onUnmounted(() => {
                   :class="['local-picker-item', entry.is_dir ? 'is-dir' : 'is-file', localPickerSelected?.path === entry.path ? 'selected' : '']"
                   @click="localPickerChoose(entry)"
                   @dblclick="entry.is_dir ? loadLocalDir(entry.path) : confirmLocalFilePicker()"
+                  @contextmenu.prevent="openLocalPickerContextMenu($event, entry)"
                 >
                   <img
                     v-if="!entry.is_dir && localPickerThumbnails[entry.path]"
@@ -7198,9 +7609,27 @@ onUnmounted(() => {
             </div>
           </div>
         </div>
+        <!-- 本地文件浏览器右键菜单（Teleport 到 body，避免 modal 的 backdrop-filter 让 fixed 定位偏移） -->
+        <Teleport to="body">
+          <div
+            v-if="localPickerMenu.show"
+            class="local-picker-menu"
+            :style="{ left: localPickerMenu.x + 'px', top: localPickerMenu.y + 'px' }"
+            @mousedown.stop
+          >
+            <div class="menu-item" @click="localPickerMenuOpen">打开</div>
+            <div class="menu-item" @click="localPickerMenuCopyPath">复制路径</div>
+            <div class="menu-item" @click="localPickerMenuRefresh">刷新</div>
+            <div class="menu-divider"></div>
+            <div class="menu-item" @click="localPickerMenuProps">属性</div>
+          </div>
+        </Teleport>
         <div class="modal-footer local-picker-footer">
           <span class="local-picker-selected" :title="localPickerSelected?.path || ''">
-            <template v-if="localPickerAction === 'save'">
+            <template v-if="localPickerPickDir">
+              {{ localPickerPath || '请选择目录' }}
+            </template>
+            <template v-else-if="localPickerAction === 'save'">
               {{ localPickerMode === 'files' ? (joinLocalPath(localPickerPath, localPickerFileName) || '请输入文件名') : '请选择保存目录' }}
             </template>
             <template v-else>
@@ -7209,6 +7638,13 @@ onUnmounted(() => {
           </span>
           <button class="btn-cancel" @click="cancelLocalFileBrowser">取消</button>
           <button
+            v-if="localPickerPickDir"
+            class="btn-confirm"
+            :disabled="!localPickerPath"
+            @click="confirmLocalDirPicker"
+          >选择此目录</button>
+          <button
+            v-else
             class="btn-confirm"
             :disabled="localPickerAction === 'save'
               ? (localPickerMode !== 'files' || !localPickerFileName.trim())
@@ -7219,7 +7655,39 @@ onUnmounted(() => {
       </div>
     </div>
     </Transition>
-    </Teleport>
+
+    <!-- 本地文件属性 -->
+    <Transition name="modal-fade">
+      <div v-if="localPickerProps.show" class="modal-overlay" style="z-index: 400000;" @mousedown.self="localPickerProps.show = false">
+        <div class="modal-card modal-small">
+          <div class="modal-header">
+            <span class="modal-title">属性</span>
+            <span class="modal-close" @click="localPickerProps.show = false">✕</span>
+          </div>
+          <div class="modal-body">
+            <div class="form-row">
+              <label>名称</label>
+              <input class="modal-input" :value="localPickerProps.name" readonly />
+            </div>
+            <div class="form-row">
+              <label>路径</label>
+              <input class="modal-input" :value="localPickerProps.path" readonly />
+            </div>
+            <div class="form-row">
+              <label>类型</label>
+              <input class="modal-input" :value="localPickerProps.isDir ? '文件夹' : '文件'" readonly />
+            </div>
+            <div class="form-row">
+              <label>大小</label>
+              <input class="modal-input" :value="localPickerProps.isDir ? '-' : formatMetricBytes(localPickerProps.size)" readonly />
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-confirm" @click="localPickerProps.show = false">好的</button>
+          </div>
+        </div>
+      </div>
+    </Transition>    </Teleport>
 
     <!-- SSH 连接密码弹窗：主机未保存密码时，在终端连接过程中弹出 -->
     <Transition name="modal-fade">
@@ -7539,6 +8007,26 @@ onUnmounted(() => {
                 <button class="btn-sec-act btn-browse" type="button" @click="browseKeyFile">浏览选择...</button>
                 <button class="btn-sec-act btn-browse" type="button" @click="openKeyGenModal">生成...</button>
               </div>
+            </div>
+
+                        <!-- 跳板机（仅 SSH） -->
+            <div v-if="hostModal.form.protocol === 'ssh'" class="form-row">
+              <label>跳板机 (可选)</label>
+              <div class="traffic-input-box">
+                <input v-model="hostModal.form.proxy_host" class="modal-input flex-1" placeholder="跳板机地址，留空表示直连" />
+                <input v-model.number="hostModal.form.proxy_port" type="number" class="modal-input" style="width: 80px;" placeholder="22" />
+              </div>
+            </div>
+            <div v-if="hostModal.form.protocol === 'ssh' && hostModal.form.proxy_host.trim()" class="form-row">
+              <label>跳板机认证</label>
+              <div class="traffic-input-box">
+                <input v-model="hostModal.form.proxy_user" class="modal-input" style="width: 110px;" placeholder="root" />
+                <input v-model="hostModal.form.proxy_pwd" type="password" class="modal-input flex-1" placeholder="密码（可选）" />
+              </div>
+            </div>
+            <div v-if="hostModal.form.protocol === 'ssh' && hostModal.form.proxy_host.trim()" class="form-row">
+              <label>跳板机私钥 (可选)</label>
+              <input v-model="hostModal.form.proxy_key" class="modal-input" placeholder="留空则用密码 / Agent" />
             </div>
 
             <!-- 终端类型（SSH / Telnet 适用；串口不涉及 TERM） -->
@@ -7993,6 +8481,46 @@ onUnmounted(() => {
       @install="installUpdate"
     />
 
+    <!-- SFTP 目录同步 -->
+    <Transition name="modal-fade">
+      <div v-if="dirSyncModal.show" class="modal-overlay" @mousedown.self="dirSyncModal.show = false">
+        <div class="modal-card modal-small">
+          <div class="modal-header">
+            <span class="modal-title">同步本地目录到远端</span>
+            <span class="modal-close" @click="dirSyncModal.show = false">✕</span>
+          </div>
+          <div class="modal-body">
+            <p class="confirm-modal-text">把本地目录整体上传到远端目录，同名且大小相同的文件会跳过。</p>
+            <div class="form-row">
+              <label>本地目录</label>
+              <div class="traffic-input-box">
+                <input v-model="dirSyncModal.localDir" class="modal-input flex-1" placeholder="选择或输入本地目录" />
+                <button class="btn-sec-act btn-browse" type="button" @click="chooseSyncLocalDir">浏览...</button>
+              </div>
+            </div>
+            <div class="form-row">
+              <label>远端目录</label>
+              <input v-model="dirSyncModal.remoteDir" class="modal-input" placeholder="/path/to/remote" />
+            </div>
+            <label class="md3-checkbox-label" style="margin-top: 4px;">
+              <input type="checkbox" v-model="dirSyncModal.skipExisting" class="md3-check-native" />
+              <span>跳过远端已存在且大小相同的文件</span>
+            </label>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-cancel" @click="dirSyncModal.show = false">取消</button>
+            <button
+              class="btn-confirm"
+              :disabled="!dirSyncModal.localDir.trim() || !dirSyncModal.remoteDir.trim()"
+              @click="startDirSync"
+            >
+              开始同步
+            </button>
+          </div>
+        </div>
+      </div>
+    </Transition>
+
     <!-- 端口转发（本地转发） -->
     <Transition name="modal-fade">
       <div v-if="forwardModal.show" class="modal-overlay" @mousedown.self="forwardModal.show = false">
@@ -8415,6 +8943,36 @@ onUnmounted(() => {
                 {{ updating ? '更新中...' : '检查更新' }}
               </button>
               <span class="config-encryption-hint">当前版本 v{{ appVersion }}</span>
+            </div>
+          </div>
+
+          <!-- 14. 断线自动重连 -->
+          <div class="settings-form-row">
+            <label class="settings-form-label">断线重连:</label>
+            <div class="settings-form-field flex-row-gap">
+              <label class="md3-checkbox-label">
+                <input
+                  type="checkbox"
+                  :checked="autoReconnectEnabled"
+                  class="md3-check-native"
+                  @change="updateAutoReconnect(($event.target as HTMLInputElement).checked)"
+                />
+                <span>SSH 连接意外断开时自动重连（3s / 6s / 12s / 24s / 30s，最多 5 次）</span>
+              </label>
+            </div>
+          </div>          <!-- 13. 终端会话日志录制 -->
+          <div class="settings-form-row">
+            <label class="settings-form-label">会话日志:</label>
+            <div class="settings-form-field flex-row-gap">
+              <label class="md3-checkbox-label">
+                <input
+                  type="checkbox"
+                  :checked="sessionLogEnabled"
+                  class="md3-check-native"
+                  @change="updateSessionLogging(($event.target as HTMLInputElement).checked)"
+                />
+                <span>记录终端输出到 %APPDATA%\QShell\logs</span>
+              </label>
             </div>
           </div>
 

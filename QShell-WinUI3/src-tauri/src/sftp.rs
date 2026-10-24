@@ -882,3 +882,217 @@ mod tests {
         assert_eq!(format_permission(0o100000, false), "----------");
     }
 }
+
+// ===== SFTP 目录同步（镜像上传）=====
+
+fn ensure_remote_dir(sftp: &ssh2::Sftp, path: &str) {
+    let mut current = String::new();
+    for segment in path.split('/').filter(|s| !s.is_empty()) {
+        current.push('/');
+        current.push_str(segment);
+        let _ = sftp.mkdir(Path::new(&current), 0o755);
+    }
+}
+
+fn collect_local_files(dir: &Path, base: &Path, out: &mut Vec<(std::path::PathBuf, u64)>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("读取本地目录失败: {}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取目录项失败: {}", e))?;
+        let path = entry.path();
+        let meta = entry.metadata().map_err(|e| format!("读取文件属性失败: {}", e))?;
+        if meta.is_dir() {
+            collect_local_files(&path, base, out)?;
+        } else if meta.is_file() {
+            let _ = base;
+            out.push((path, meta.len()));
+        }
+    }
+    Ok(())
+}
+
+/// 递归把本地目录同步到远端目录。默认跳过「远端已存在且大小相同」的文件。
+#[tauri::command]
+pub async fn sftp_sync_directory(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, SshManager>,
+    session_id: String,
+    local_dir: String,
+    remote_dir: String,
+    task_id: String,
+    skip_existing: Option<bool>,
+) -> Result<(), String> {
+    let params = {
+        let guard = state.sessions.lock();
+        let act = guard.get(&session_id).ok_or("SSH 会话未连接")?;
+        act.params.clone()
+    };
+
+    let local_root = std::path::PathBuf::from(&local_dir);
+    if !local_root.is_dir() {
+        return Err("本地目录不存在或不是文件夹".to_string());
+    }
+    // 在远端创建与本地目录同名的文件夹，再同步其内容
+    let local_dir_name = local_root
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "sync".to_string());
+    let remote_root = format!("{}/{}", remote_dir.trim_end_matches('/'), local_dir_name);
+    let skip = skip_existing.unwrap_or(true);
+
+    tokio::task::spawn_blocking(move || {
+        clear_transfer_cancel(&task_id);
+        let handle = open_sftp_handle(&params)?;
+
+        let mut files = Vec::new();
+        collect_local_files(&local_root, &local_root, &mut files)?;
+        let total_files = files.len();
+        let total_bytes: u64 = files.iter().map(|(_, size)| *size).sum();
+
+        let mut done_bytes: u64 = 0;
+        let mut done_files = 0usize;
+        let mut errors: Vec<String> = Vec::new();
+
+        for (local_path, size) in &files {
+            if is_transfer_cancelled(&task_id) {
+                break;
+            }
+            let rel = local_path
+                .strip_prefix(&local_root)
+                .unwrap_or(local_path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let remote_path = format!("{}/{}", remote_root, rel);
+            let fname = rel.clone();
+
+            if let Some(parent) = std::path::Path::new(&remote_path).parent() {
+                let sftp = handle.sftp.lock();
+                ensure_remote_dir(&sftp, &parent.to_string_lossy());
+            }
+
+            if skip {
+                let same = {
+                    let sftp = handle.sftp.lock();
+                    sftp.stat(Path::new(&remote_path))
+                        .map(|st| st.size == Some(*size))
+                        .unwrap_or(false)
+                };
+                if same {
+                    done_bytes += *size;
+                    done_files += 1;
+                    let _ = app.emit(
+                        "sftp-transfer-progress",
+                        TransferProgressPayload {
+                            task_id: task_id.clone(),
+                            filename: fname,
+                            is_upload: true,
+                            transferred: done_bytes,
+                            total: total_bytes.max(1),
+                            speed_bps: 0,
+                            status: "running".into(),
+                            error: None,
+                        },
+                    );
+                    continue;
+                }
+            }
+
+            let temp_remote = format!("{}.qshell-tmp-{}", remote_path, task_id);
+            let result: Result<u64, String> = (|| {
+                let mut local_file = File::open(local_path)
+                    .map_err(|e| format!("打开本地文件失败: {}", e))?;
+                let mut remote_file = {
+                    let sftp = handle.sftp.lock();
+                    sftp.create(Path::new(&temp_remote))
+                        .map_err(|e| format!("创建远端文件失败: {}", e))?
+                };
+                let mut buffer = [0u8; 256 * 1024];
+                let mut transferred_in_file: u64 = 0;
+                loop {
+                    if is_transfer_cancelled(&task_id) {
+                        return Err("cancelled".to_string());
+                    }
+                    let n = local_file.read(&mut buffer).map_err(|e| e.to_string())?;
+                    if n == 0 {
+                        break;
+                    }
+                    remote_file.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
+                    transferred_in_file += n as u64;
+                    let _ = app.emit(
+                        "sftp-transfer-progress",
+                        TransferProgressPayload {
+                            task_id: task_id.clone(),
+                            filename: fname.clone(),
+                            is_upload: true,
+                            transferred: done_bytes + transferred_in_file,
+                            total: total_bytes.max(1),
+                            speed_bps: 0,
+                            status: "running".into(),
+                            error: None,
+                        },
+                    );
+                }
+                drop(remote_file);
+                {
+                    let sftp = handle.sftp.lock();
+                    sftp.rename(Path::new(&temp_remote), Path::new(&remote_path), None)
+                        .map_err(|e| format!("重命名失败: {}", e))?;
+                }
+                Ok(transferred_in_file)
+            })();
+
+            match result {
+                Ok(n) => {
+                    done_bytes += n;
+                    done_files += 1;
+                }
+                Err(e) if e == "cancelled" => {
+                    {
+                        let sftp = handle.sftp.lock();
+                        let _ = sftp.unlink(Path::new(&temp_remote));
+                    }
+                    let _ = app.emit(
+                        "sftp-transfer-progress",
+                        TransferProgressPayload {
+                            task_id: task_id.clone(),
+                            filename: fname,
+                            is_upload: true,
+                            transferred: done_bytes,
+                            total: total_bytes.max(1),
+                            speed_bps: 0,
+                            status: "cancelled".into(),
+                            error: None,
+                        },
+                    );
+                    clear_transfer_cancel(&task_id);
+                    return Ok(());
+                }
+                Err(e) => {
+                    {
+                        let sftp = handle.sftp.lock();
+                        let _ = sftp.unlink(Path::new(&temp_remote));
+                    }
+                    errors.push(format!("{}: {}", fname, e));
+                }
+            }
+        }
+
+        let cancelled = is_transfer_cancelled(&task_id);
+        let _ = app.emit(
+            "sftp-transfer-progress",
+            TransferProgressPayload {
+                task_id: task_id.clone(),
+                filename: format!("目录同步（{}/{} 个文件）", done_files, total_files),
+                is_upload: true,
+                transferred: done_bytes,
+                total: total_bytes.max(1),
+                speed_bps: 0,
+                status: if cancelled { "cancelled" } else { "completed" }.into(),
+                error: if errors.is_empty() { None } else { Some(errors.join("; ")) },
+            },
+        );
+        clear_transfer_cancel(&task_id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("目录同步任务失败: {}", e))?
+}

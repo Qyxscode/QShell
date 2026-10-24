@@ -3713,7 +3713,7 @@ html.window-resizing .workspace-layout {
 /* 全局拟态右键菜单 (无缝融入卡片与工作区统一 MD3 质感体系) */
 .context-menu {
   position: fixed;
-  z-index: 9999;
+  z-index: 900000;
   background: var(--bg-card);
   border: 1px solid var(--border-card);
   border-radius: var(--radius-btn);
@@ -6025,4 +6025,93 @@ body,
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+/* BUG-039 修复：偏好设置内容过多时限制高度并滚动 */
+.settings-modal-card {
+  max-height: 85vh;
+}
+
+.settings-form-body {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* 终端搜索条 */
+.terminal-search-bar {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.terminal-search-input {
+  width: 220px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-size: 12px;
+  outline: none;
+}
+
+.terminal-search-case {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-sub);
+  cursor: pointer;
+  user-select: none;
+}
+
+.terminal-search-btn {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-capsule);
+  color: var(--text-main);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.terminal-search-btn:hover {
+  background: var(--bg-capsule-hover);
+}
+/* 本地文件浏览器右键菜单 */
+.local-picker-menu {
+  position: fixed;
+  z-index: 900001;
+  background: var(--bg-card);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-btn);
+  padding: 5px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45), 0 8px 32px rgba(0, 0, 0, 0.4);
+  min-width: 150px;
+}
+
+.local-picker-menu .menu-item {
+  padding: 6px 12px;
+  font-size: 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--text-main);
+}
+
+.local-picker-menu .menu-item:hover {
+  background: var(--bg-capsule-hover);
 }

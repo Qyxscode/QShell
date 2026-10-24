@@ -122,7 +122,8 @@ fn spawn_telnet_reader_thread(
                     if !clean_bytes.is_empty() {
                         let text = decoder.decode(&clean_bytes);
                         if !text.is_empty() {
-                            let _ = app.emit(&format!("ssh-data-{}", sid), text);
+                            crate::session_log::log_chunk(&sid, &text);
+                        let _ = app.emit(&format!("ssh-data-{}", sid), text);
                         }
                     }
                 }

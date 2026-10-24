@@ -111,6 +111,7 @@ fn spawn_local_reader_thread(    app: AppHandle,
                 Ok(n) => {
                     let text = decoder.decode(&buf[..n]);
                     if !text.is_empty() {
+                        crate::session_log::log_chunk(&sid, &text);
                         let _ = app.emit(&format!("ssh-data-{}", sid), text);
                     }
                 }
