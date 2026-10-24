@@ -398,7 +398,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.74");
+const appVersion = ref("0.99.75");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })

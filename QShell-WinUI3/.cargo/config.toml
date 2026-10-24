@@ -1,0 +1,3 @@
+# 静态链接 MSVC CRT（/MT），避免用户机器缺少 vcruntime140.dll 无法启动
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
