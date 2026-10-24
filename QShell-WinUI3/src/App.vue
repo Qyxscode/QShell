@@ -24,7 +24,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 // --- 界面状态 ---
 const currentView = ref<"workspace" | "mgmt">("workspace");
 const isRightPanelOpen = ref(true);
-const rightPanelTab = ref<"sftp" | "memo">("memo");
+const rightPanelTab = ref<"sftp" | "memo" | "history">("memo");
 
 function onDrawerTransitionEnd() {
   sessions.value.forEach(tab => {
@@ -399,7 +399,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.77");
+const appVersion = ref("0.99.78");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -570,6 +570,7 @@ interface SessionTab {
   reconnectAttempts?: number;
   intentionalExit?: boolean;
   inputLine?: string;
+  recentOutput?: string;
 }
 
 const sessions = ref<SessionTab[]>([]);
@@ -1124,7 +1125,7 @@ const contextMenu = ref({
   show: false,
   x: 0,
   y: 0,
-  targetType: "" as "host" | "group" | "tab" | "terminal" | "sftp_item" | "sftp_bg" | "memo_item" | "memo_group" | "memo_bg" | "input" | "",
+  targetType: "" as "host" | "group" | "tab" | "terminal" | "sftp_item" | "sftp_bg" | "memo_item" | "memo_group" | "memo_bg" | "input" | "history" | "",
   targetHost: null as HostItem | null,
   targetGroup: null as DeviceGroup | null,
   targetTab: null as SessionTab | null,
@@ -1132,6 +1133,8 @@ const contextMenu = ref({
   targetMemoGroupIdx: null as number | null,
   targetMemoItemIdx: null as number | null,
   targetMemoItem: null as MemoItem | null,
+  targetHistoryItem: null as HistoryEntry | null,
+  targetHistoryIndex: -1,
 });
 
 function openContextMenu(
@@ -1165,6 +1168,8 @@ function openContextMenu(
     targetMemoGroupIdx: memoGroupIdx !== undefined ? memoGroupIdx : null,
     targetMemoItemIdx: memoItemIdx !== undefined ? memoItemIdx : null,
     targetMemoItem: memoItem || null,
+    targetHistoryItem: null,
+    targetHistoryIndex: -1,
   };
 
   nextTick(() => {
@@ -1463,6 +1468,115 @@ const terminalBgImageLuminance = ref(0);
 const showTerminalSettingsModal = ref(false);
 const autostartEnabled = ref(false);
 
+// --- 路由追踪 ---
+interface TraceHop {
+  hop: number;
+  ip: string;
+  rtt_ms: number[];
+  timeout: boolean;
+  location: string | null;
+  isp: string | null;
+}
+
+let traceUnlisteners: Array<() => void> = [];
+
+const traceModal = ref({
+  show: false,
+  host: "",
+  title: "",
+  loading: false,
+  error: "",
+  hops: [] as TraceHop[],
+});
+
+async function openTraceRoute(h: HostItem) {
+  closeContextMenu();
+  cleanupTraceListeners();
+  const requestId = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  traceModal.value = {
+    show: true,
+    host: h.host,
+    title: h.name || h.host,
+    loading: true,
+    error: "",
+    hops: [],
+  };
+
+  const unHop = await listen<{ requestId: string; hop: TraceHop }>("trace-hop", (event) => {
+    if (event.payload.requestId !== requestId) return;
+    traceModal.value.hops.push(event.payload.hop);
+  });
+  const unLocation = await listen<{ requestId: string; ip: string; location: string; isp: string }>(
+    "trace-hop-location",
+    (event) => {
+      if (event.payload.requestId !== requestId) return;
+      const hop = traceModal.value.hops.find(item => item.ip === event.payload.ip);
+      if (hop) {
+        hop.location = event.payload.location;
+        hop.isp = event.payload.isp || null;
+      }
+    },
+  );
+  const unDone = await listen<{ requestId: string; hopCount: number }>("trace-done", (event) => {
+    if (event.payload.requestId !== requestId) return;
+    traceModal.value.loading = false;
+    if (traceModal.value.hops.length === 0) {
+      traceModal.value.error = "路由追踪没有返回任何结果";
+    }
+    cleanupTraceListeners();
+  });
+  traceUnlisteners = [unHop, unLocation, unDone];
+
+  try {
+    await invoke("start_trace_route", { requestId, host: h.host });
+  } catch (error: any) {
+    traceModal.value.error = String(error?.message || error || "路由追踪失败");
+    traceModal.value.loading = false;
+    cleanupTraceListeners();
+  }
+}
+
+function cleanupTraceListeners() {
+  for (const un of traceUnlisteners) {
+    try {
+      un();
+    } catch {}
+  }
+  traceUnlisteners = [];
+}
+
+function traceAvg(hop: TraceHop): number | null {
+  if (!hop.rtt_ms || hop.rtt_ms.length === 0) return null;
+  return hop.rtt_ms.reduce((a, b) => a + b, 0) / hop.rtt_ms.length;
+}
+
+function traceMaxRtt(): number {
+  let max = 0;
+  for (const hop of traceModal.value.hops) {
+    const avg = traceAvg(hop);
+    if (avg !== null && avg > max) max = avg;
+  }
+  return Math.max(max, 20);
+}
+
+function traceBarWidth(hop: TraceHop): number {
+  const avg = traceAvg(hop);
+  if (avg === null) return 0;
+  return Math.min(100, Math.max(8, (avg / traceMaxRtt()) * 100));
+}
+
+function traceBarClass(hop: TraceHop): string {
+  const avg = traceAvg(hop);
+  if (avg === null) return "is-timeout";
+  if (avg < 50) return "is-fast";
+  if (avg < 150) return "is-mid";
+  return "is-slow";
+}
+
+function traceRttText(hop: TraceHop): string {
+  if (!hop.rtt_ms || hop.rtt_ms.length === 0) return "*";
+  return hop.rtt_ms.map(v => `${v.toFixed(v < 10 ? 1 : 0)} ms`).join(" · ");
+}
 // --- 终端全屏 ---
 const terminalFullscreen = ref(false);
 let rightPanelWasOpen = false;
@@ -2374,6 +2488,7 @@ async function deleteHost(h: HostItem) {
     g.hosts = g.hosts.filter(item => item !== h && !(item.host === h.host && item.port === h.port));
   });
   await invoke("save_hosts_config", { config: configData.value });
+  purgeCommandHistoryForHost(h.host, h.port);
 }
 
 // 从主机管理列表中删除主机 (仅移除卡片，不影响设备列表)
@@ -2383,6 +2498,7 @@ async function deleteManagedHost(h: HostItem) {
   );
   evaluateHostAlerts();
   await invoke("save_hosts_config", { config: configData.value });
+  purgeCommandHistoryForHost(h.host, h.port);
 }
 
 function confirmDeleteHost(h: HostItem) {
@@ -4619,25 +4735,27 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     // 正常连接时转发到 SSH；断开状态下按回车触发 reconnectSession 重连
     term.onData((data) => {
       if (newTab.read_only) return;
-      // 跟踪输入行：识别用户主动 exit/logout，避免自动重连把会话拉回来
-      if (h.protocol === "ssh") {
-        for (const ch of data) {
-          if (ch === "\r" || ch === "\n") {
-            const cmd = (newTab.inputLine || "").trim().toLowerCase();
-            if (cmd === "exit" || cmd === "logout") {
-              newTab.intentionalExit = true;
-              cancelAutoReconnect(newTab);
-            }
-            newTab.inputLine = "";
-          } else if (ch === "\x04") {
-            // Ctrl+D：shell 退出（EOF）
+      // 跟踪输入行：记录命令历史 + 识别用户主动 exit/logout（仅 SSH 需要）
+      for (const ch of data) {
+        if (ch === "\r" || ch === "\n") {
+          const line = newTab.inputLine || "";
+          const cmd = line.trim().toLowerCase();
+          if (h.protocol === "ssh" && (cmd === "exit" || cmd === "logout")) {
             newTab.intentionalExit = true;
             cancelAutoReconnect(newTab);
-          } else if (ch === "\x7f" || ch === "\b") {
-            newTab.inputLine = (newTab.inputLine || "").slice(0, -1);
-          } else if (ch >= " ") {
-            newTab.inputLine = (newTab.inputLine || "") + ch;
           }
+          // 处于密码输入提示时不要记录，避免把密码写进历史
+          if (line.trim() && !isPasswordPromptPending(newTab)) recordCommand(line);
+          newTab.inputLine = "";
+        } else if (ch === "\x04") {
+          if (h.protocol === "ssh") {
+            newTab.intentionalExit = true;
+            cancelAutoReconnect(newTab);
+          }
+        } else if (ch === "\x7f" || ch === "\b") {
+          newTab.inputLine = (newTab.inputLine || "").slice(0, -1);
+        } else if (ch >= " ") {
+          newTab.inputLine = (newTab.inputLine || "") + ch;
         }
       }
       if (newTab.alive) {
@@ -4655,6 +4773,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
 
     const unlisten = await listen<string>(`ssh-data-${sid}`, (event) => {
       term.write(event.payload);
+      // 只保留最近输出片段，用于判断当前是否处于密码输入提示（避免把密码写进历史）
+      newTab.recentOutput = ((newTab.recentOutput || "") + event.payload).slice(-400);
     });
     newTab.unlisten = unlisten;
 
@@ -5235,7 +5355,154 @@ function clearSftpState() {
   isSftpDragOver.value = false;
 }
 
-function switchRightPanelTab(tab: "sftp" | "memo") {
+// --- 命令输入历史 ---
+interface HistoryEntry {
+  cmd: string;
+  ts: number;
+  host?: string;
+  hostKey?: string;
+}
+
+const PASSWORD_PROMPT_PATTERN = /(password|passphrase|passcode|密码|口令)\s*[:：]?\s*$/i;
+
+function stripAnsiForCheck(text: string): string {
+  return text
+    .replace(/\x1b\][^\x07]*\x07/g, "")
+    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
+    .replace(/\x1b[()][A-Z0-9]/g, "");
+}
+
+function isPasswordPromptPending(tab: SessionTab): boolean {
+  const recent = stripAnsiForCheck(tab.recentOutput || "");
+  return PASSWORD_PROMPT_PATTERN.test(recent.slice(-120));
+}
+const commandHistory = ref<HistoryEntry[]>([]);
+const HISTORY_STORAGE_KEY = "qshell_command_history_v1";
+const HISTORY_LIMIT = 200;
+
+function loadCommandHistory() {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (raw) {
+      commandHistory.value = JSON.parse(raw).slice(0, HISTORY_LIMIT);
+    }
+  } catch (error) {
+    console.warn("[history] 读取命令历史失败:", error);
+  }
+}
+
+function recordCommand(cmd: string) {
+  const trimmed = cmd.trim();
+  if (!trimmed) return;
+  // 避免把密码类命令写进历史
+  if (/^(pass|passwd|password|token|secret|key)\b/i.test(trimmed) || trimmed.includes("--password")) return;
+  const last = commandHistory.value[0];
+  if (last && last.cmd === trimmed && Date.now() - last.ts < 2000) return;
+  const sessionHost = activeSession.value?.host;
+  commandHistory.value.unshift({
+    cmd: trimmed,
+    ts: Date.now(),
+    host: sessionHost?.host,
+    hostKey: sessionHost ? `${sessionHost.host}:${sessionHost.port || 22}` : undefined,
+  });
+  if (commandHistory.value.length > HISTORY_LIMIT) {
+    commandHistory.value.length = HISTORY_LIMIT;
+  }
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(commandHistory.value));
+  } catch (error) {
+    console.warn("[history] 保存命令历史失败:", error);
+  }
+}
+
+function sendHistoryCommand(cmd: string) {
+  const tab = activeSession.value;
+  if (!tab?.alive || tab.read_only) return;
+  const payload = cmd + "\r";
+  if (isGenericProtocol(tab.host?.protocol)) {
+    void invoke("write_generic_session", { sessionId: tab.id, data: payload });
+  } else {
+    void invoke("write_ssh_session", { sessionId: tab.id, data: payload });
+  }
+  // 发送后把焦点还给终端，否则用户需要手动点一下才能继续输入（比如输密码）
+  void nextTick(() => {
+    tab.termInstance?.focus();
+  });
+}
+
+const historyFilter = ref<"all" | "current">("all");
+
+const filteredHistory = computed(() => {
+  if (historyFilter.value !== "current") return commandHistory.value;
+  const host = activeSession.value?.host;
+  // 没有活动会话时，「当前主机」应该是空列表，而不是退化成全部
+  if (!host) return [];
+  const key = `${host.host}:${host.port || 22}`;
+  return commandHistory.value.filter(item => item.hostKey === key);
+});
+
+function purgeCommandHistoryForHost(host: string, port?: number) {
+  const key = `${host}:${port || 22}`;
+  const before = commandHistory.value.length;
+  commandHistory.value = commandHistory.value.filter(item => item.hostKey !== key);
+  if (commandHistory.value.length !== before) {
+    try {
+      localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(commandHistory.value));
+    } catch (error) {
+      console.warn("[history] 保存命令历史失败:", error);
+    }
+  }
+}
+function openHistoryContextMenu(event: MouseEvent, item: HistoryEntry, index: number) {
+  event.preventDefault();
+  contextMenu.value = {
+    ...contextMenu.value,
+    show: true,
+    x: event.clientX,
+    y: event.clientY,
+    targetType: "history",
+    targetHistoryItem: item,
+    targetHistoryIndex: index,
+  };
+}
+
+function copyHistoryCommand() {
+  const item = contextMenu.value.targetHistoryItem;
+  closeContextMenu();
+  if (item) void writeClipboardText(item.cmd);
+}
+
+function deleteHistoryCommand() {
+  const item = contextMenu.value.targetHistoryItem;
+  closeContextMenu();
+  if (!item) return;
+  const index = commandHistory.value.indexOf(item);
+  if (index < 0) return;
+  commandHistory.value.splice(index, 1);
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, JSON.stringify(commandHistory.value));
+  } catch (error) {
+    console.warn("[history] 保存命令历史失败:", error);
+  }
+}
+function clearCommandHistory() {
+  commandHistory.value = [];
+  try {
+    localStorage.removeItem(HISTORY_STORAGE_KEY);
+  } catch (error) {
+    console.warn("[history] 清除命令历史失败:", error);
+  }
+}
+
+function formatHistoryTime(ts: number) {
+  const date = new Date(ts);
+  const now = new Date();
+  const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return sameDay ? `${hh}:${mm}` : `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`;
+}
+function switchRightPanelTab(tab: "sftp" | "memo" | "history") {
   rightPanelTab.value = tab;
   if (tab === "sftp" && activeSessionId.value) {
     fetchSftpHome();
@@ -6755,6 +7022,7 @@ onMounted(async () => {
   window.addEventListener("click", handleGlobalClick);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("keydown", handleFullscreenKey);
+  loadCommandHistory();
 
   // 监听 SFTP 文件传输进度广播 (仅在 Tauri 运行环境下监听)
   if (isTauri) {
@@ -7366,15 +7634,40 @@ onUnmounted(() => {
           @transitionend="onDrawerTransitionEnd"
         >
             <div class="right-card-header">
-              <span class="right-card-title">{{ rightPanelTab === 'memo' ? '命令备忘录' : 'SFTP 远程文件' }}</span>
-              <button 
-                :class="['btn-switch-white-pill', rightPanelTab === 'sftp' ? 'btn-danger' : '']"
-                @click="switchRightPanelTab(rightPanelTab === 'memo' ? 'sftp' : 'memo')"
-              >
-                {{ rightPanelTab === 'memo' ? 'SFTP 传输' : '关闭' }}
-              </button>
+              <div class="right-tab-group">
+                <button :class="['right-tab-btn', rightPanelTab === 'memo' ? 'active' : '']" @click="switchRightPanelTab('memo')">备忘录</button>
+                <button :class="['right-tab-btn', rightPanelTab === 'sftp' ? 'active' : '']" @click="switchRightPanelTab('sftp')">SFTP</button>
+                <button :class="['right-tab-btn', rightPanelTab === 'history' ? 'active' : '']" @click="switchRightPanelTab('history')">历史</button>
+              </div>
             </div>
 
+          <!-- 命令历史视图 -->
+          <div v-if="rightPanelTab === 'history'" class="history-container">
+            <div class="history-toolbar">
+              <div class="history-filter-group">
+                <button :class="['history-filter-btn', historyFilter === 'all' ? 'active' : '']" @click="historyFilter = 'all'">全部</button>
+                <button :class="['history-filter-btn', historyFilter === 'current' ? 'active' : '']" @click="historyFilter = 'current'">当前主机</button>
+              </div>
+              <span class="history-count">共 {{ filteredHistory.length }} 条</span>
+              <button class="btn-sftp-action" :disabled="commandHistory.length === 0" @click="clearCommandHistory">清空</button>
+            </div>
+            <div v-if="filteredHistory.length === 0" class="history-empty">
+              还没有命令记录，在终端里执行命令后会出现在这里
+            </div>
+            <div v-else class="history-list">
+              <div
+                v-for="(item, idx) in filteredHistory"
+                :key="idx"
+                class="history-item"
+                :title="'点击发送：' + item.cmd"
+                @click="sendHistoryCommand(item.cmd)"
+                @contextmenu.prevent="openHistoryContextMenu($event, item, idx)"
+              >
+                <span class="history-cmd">{{ item.cmd }}</span>
+                <span class="history-time">{{ formatHistoryTime(item.ts) }}</span>
+              </div>
+            </div>
+          </div>
           <!-- SFTP 视图 (1:1 复刻原版 ssh8.py 设计) -->
           <div v-if="rightPanelTab === 'sftp'" class="sftp-container" @contextmenu.prevent="openContextMenu($event, 'sftp_bg')">
             <!-- 顶部快捷路径导航栏 -->
@@ -7484,7 +7777,7 @@ onUnmounted(() => {
           </div>
 
           <!-- 备忘录视图 (复刻原版圆角胶囊条与底部浅蓝添加按钮) -->
-          <div v-else class="memo-container" @contextmenu.prevent="openContextMenu($event, 'memo_bg')">
+          <div v-if="rightPanelTab === 'memo'" class="memo-container" @contextmenu.prevent="openContextMenu($event, 'memo_bg')">
             <div 
               v-for="(g, gIdx) in configData.memos" 
               :key="g.group" 
@@ -7611,7 +7904,9 @@ onUnmounted(() => {
             <div class="card-body">
               <div class="card-row1">
                 <span class="card-name">{{ h.name }}</span>
-                <span 
+                <div class="card-row1-right">
+                  <button class="card-trace-btn" @click.stop="openTraceRoute(h)" title="路由追踪（可视化）">路由追踪</button>
+                  <span 
                   class="card-latency" 
                   :class="{
                     'is-tcp': (h.latency_text || '').startsWith('TCP'),
@@ -7620,7 +7915,8 @@ onUnmounted(() => {
                   }"
                 >
                   {{ h.latency_text || '待测速' }}
-                </span>
+                  </span>
+                </div>
               </div>
               <div class="card-addr">{{ h.host }}:{{ h.port }}</div>
 
@@ -7860,6 +8156,12 @@ onUnmounted(() => {
         <div class="menu-item" @click="inputContextAction('paste')">粘贴</div>
         <div class="menu-divider"></div>
         <div class="menu-item" @click="inputContextAction('selectAll')">全选</div>
+      </template>
+      <template v-else-if="contextMenu.targetType === 'history'">
+        <div class="menu-item" @click="sendHistoryCommand(contextMenu.targetHistoryItem!.cmd)">发送到终端</div>
+        <div class="menu-item" @click="copyHistoryCommand">复制命令</div>
+        <div class="menu-divider"></div>
+        <div class="menu-item danger" @click="deleteHistoryCommand">删除此条</div>
       </template>
       <template v-else-if="contextMenu.targetType === 'sftp_item'">
         <div v-if="!contextMenu.targetSftpItem?.is_dir" class="menu-item" @click="sftpTriggerDownload(contextMenu.targetSftpItem!)">下载文件到本地</div>
@@ -9436,6 +9738,49 @@ onUnmounted(() => {
     </div>
     </Transition>
 
+    <!-- 路由追踪可视化弹窗 -->
+    <Transition name="modal-fade">
+      <div v-if="traceModal.show" class="modal-overlay" @mousedown.self="traceModal.show = false">
+        <div class="modal-card trace-modal">
+          <div class="modal-header">
+            <span class="modal-title">路由追踪 · {{ traceModal.title }}</span>
+            <span class="modal-close" @click="traceModal.show = false">✕</span>
+          </div>
+          <div class="trace-body">
+            <div class="trace-target-row">
+              <span class="trace-target-label">目标</span>
+              <span class="trace-target-ip">{{ traceModal.host }}</span>
+            </div>
+            <div v-if="traceModal.error" class="trace-error">{{ traceModal.error }}</div>
+            <template v-else>
+              <div v-if="traceModal.hops.length > 0" class="trace-list">
+                <div v-for="hop in traceModal.hops" :key="hop.hop" class="trace-hop" :class="{ 'is-timeout': hop.timeout && !hop.ip }">
+                  <span class="trace-hop-index">{{ hop.hop }}</span>
+                  <div class="trace-hop-main">
+                    <div class="trace-hop-ip-row">
+                      <span class="trace-hop-ip" :title="hop.ip || '请求超时'">{{ hop.ip || '请求超时' }}</span>
+                      <span v-if="hop.location" class="trace-hop-location">{{ hop.location }}</span>
+                    </div>
+                    <div class="trace-bar-track">
+                      <div class="trace-bar" :class="traceBarClass(hop)" :style="{ width: traceBarWidth(hop) + '%' }"></div>
+                    </div>
+                  </div>
+                  <span class="trace-hop-rtt">{{ traceRttText(hop) }}</span>
+                </div>
+              </div>
+              <div v-if="traceModal.loading" class="trace-loading">
+                <span class="trace-spinner"></span>
+                <span>正在追踪路由...（已发现 {{ traceModal.hops.length }} 跳）</span>
+              </div>
+              <div v-else-if="traceModal.hops.length === 0" class="trace-loading">未发现任何路由节点</div>
+            </template>
+          </div>
+          <div class="modal-footer">
+            <button class="btn-confirm" @click="traceModal.show = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
     <!-- 弹窗 7.5：全局界面字体更换选择弹窗 (FontSelectorModal) -->
     <Transition name="modal-fade">
     <div v-if="showFontSelectorModal" class="modal-overlay" @mousedown.self="showFontSelectorModal = false">

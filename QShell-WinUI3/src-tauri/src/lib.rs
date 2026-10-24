@@ -16,6 +16,8 @@ mod raw_rlogin_service;
 mod session_state;
 #[path = "ftp.rs"]
 mod ftp;
+#[path = "trace_route.rs"]
+mod trace_route;
 pub mod generic_terminal;
 
 use ssh::{SshManager, start_ssh_session, write_ssh_session, resize_ssh_session, close_ssh_session};
@@ -36,6 +38,7 @@ use session_log::{set_session_logging, get_session_logging};
 use raw_rlogin_service::{start_raw_tcp_session, start_rlogin_session};
 use session_state::{save_session_state, load_session_state, clear_session_state};
 use ftp::{FtpManager, ftp_connect, ftp_list, ftp_download, ftp_close, ftp_upload, ftp_remove, ftp_rename, ftp_mkdir};
+use trace_route::start_trace_route;
 use backup::{
     export_local_backup, import_local_backup, test_webdav_connection,
     webdav_upload_backup, webdav_download_backup
@@ -543,6 +546,7 @@ pub fn run() {
             ftp_remove,
             ftp_rename,
             ftp_mkdir,
+            start_trace_route,
             get_session_logging,
             fetch_system_metrics,
             audit_host_traffic,
