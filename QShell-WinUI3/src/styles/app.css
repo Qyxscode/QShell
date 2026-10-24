@@ -6115,3 +6115,74 @@ body,
 .local-picker-menu .menu-item:hover {
   background: var(--bg-capsule-hover);
 }
+/* 偏好设置分组 */
+.settings-group-title {
+  margin: 18px 0 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-card);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-sub);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.settings-group-title:first-child {
+  border-top: none;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.settings-group-toggle {
+  cursor: pointer;
+  user-select: none;
+}
+
+.settings-group-arrow {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.settings-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* 背景图行：标签与按钮顶部对齐，避免按钮换行时错位 */
+.bg-image-row {
+  align-items: flex-start;
+}
+
+.bg-image-row .settings-form-label {
+  padding-top: 6px;
+}
+
+/* 折叠分组标题：增大点击区域与箭头 */
+.settings-group-toggle {
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 4px;
+  margin: 10px 0 4px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+
+.settings-group-toggle:hover {
+  background: var(--bg-capsule-hover);
+}
+
+.settings-group-toggle .settings-group-arrow {
+  font-size: 14px;
+  padding: 0 6px;
+  line-height: 1;
+}
+/* 背景图说明文字：独立一行，避免换行挤压其他行 */
+.bg-image-hint-line {
+  margin-left: 112px;
+  margin-top: -4px;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--text-sub);
+  line-height: 1.4;
+}

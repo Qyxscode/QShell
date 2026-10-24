@@ -72,6 +72,10 @@ pub fn write_generic_session(
                 // 本地 PTY 直接接收原始终端字节（由 ConPTY 处理回显与换行）
                 bytes_to_write = data.as_bytes().to_vec();
             }
+            ProtocolType::Raw | ProtocolType::Rlogin => {
+                // 裸 TCP / Rlogin 直接透传原始字节
+                bytes_to_write = data.as_bytes().to_vec();
+            }
         }
 
         let mut w = sess.writer.lock();

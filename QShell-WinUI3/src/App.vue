@@ -394,11 +394,11 @@ function toggleTheme(event?: MouseEvent) {
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 // telnet / serial / local 都走 GenericStreamManager，只有 SSH 走 ssh.rs
 function isGenericProtocol(protocol?: string): boolean {
-  return protocol === "telnet" || protocol === "serial" || protocol === "local";
+  return protocol === "telnet" || protocol === "rlogin" || protocol === "raw" || protocol === "serial" || protocol === "local";
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.75");
+const appVersion = ref("0.99.76");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -486,7 +486,7 @@ interface TrafficAuditResult {
 
 interface HostItem {
   name: string;
-  protocol?: "ssh" | "telnet" | "serial" | "local";
+  protocol?: "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local";
   host: string;
   port: number;
   user: string;
@@ -560,6 +560,8 @@ interface SessionTab {
   runtimePassword?: string;
   reconnectTimer?: number | null;
   reconnectAttempts?: number;
+  intentionalExit?: boolean;
+  inputLine?: string;
 }
 
 const sessions = ref<SessionTab[]>([]);
@@ -1211,7 +1213,7 @@ const hostModal = ref({
   mode: 'all' as 'all' | 'connection' | 'asset',
   form: {
     name: "",
-    protocol: 'ssh' as 'ssh' | 'telnet' | 'serial' | 'local',
+    protocol: 'ssh' as 'ssh' | 'telnet' | 'rlogin' | 'raw' | 'serial' | 'local',
     local_shell: 'powershell' as 'powershell' | 'cmd',
     proxy_host: '',
     proxy_port: 22,
@@ -1484,6 +1486,8 @@ const autostartPreferred = ref<boolean | null>(null);
 
 // --- 断线自动重连 ---
 const autoReconnectEnabled = ref(true);
+const advancedAppearanceOpen = ref(false);
+const advancedFeaturesOpen = ref(false);
 const AUTO_RECONNECT_DELAYS = [3000, 6000, 12000, 24000, 30000];
 
 function cancelAutoReconnect(tab: SessionTab) {
@@ -1494,6 +1498,11 @@ function cancelAutoReconnect(tab: SessionTab) {
 }
 
 function scheduleAutoReconnect(tab: SessionTab) {
+  if (tab.intentionalExit) {
+    // 用户主动 exit/logout，不自动重连
+    tab.intentionalExit = false;
+    return;
+  }
   if (!autoReconnectEnabled.value || !isTauri) return;
   if (tab.host?.protocol !== "ssh") return;
   if (tab.is_locked) return;
@@ -1680,6 +1689,8 @@ const importSelectModal = ref({
 const protocolOptions = [
   { label: "SSH (默认网络终端)", value: "ssh" },
   { label: "Telnet (网络终端)", value: "telnet" },
+  { label: "Rlogin (传统 Unix 登录)", value: "rlogin" },
+  { label: "Raw TCP (裸 TCP 透传)", value: "raw" },
   { label: "Serial (串口硬件终端)", value: "serial" },
   { label: "Local (本地 PowerShell / CMD)", value: "local" },
 ];
@@ -1763,7 +1774,7 @@ function handleBaudOutsideClick(e: MouseEvent) {
   }
 }
 
-function onProtocolChange(newProto: "ssh" | "telnet" | "serial" | "local") {
+function onProtocolChange(newProto: "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local") {
   hostModal.value.form.protocol = newProto;
   if (newProto === "ssh") {
     hostModal.value.form.port = 22;
@@ -1771,6 +1782,16 @@ function onProtocolChange(newProto: "ssh" | "telnet" | "serial" | "local") {
       hostModal.value.form.host = "127.0.0.1";
     }
   } else if (newProto === "telnet") {
+    hostModal.value.form.port = 23;
+    if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
+      hostModal.value.form.host = "127.0.0.1";
+    }
+  } else if (newProto === "rlogin") {
+    hostModal.value.form.port = 513;
+    if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
+      hostModal.value.form.host = "127.0.0.1";
+    }
+  } else if (newProto === "raw") {
     hostModal.value.form.port = 23;
     if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
       hostModal.value.form.host = "127.0.0.1";
@@ -1793,7 +1814,7 @@ function openAddHostModal(modeOrEvent?: 'all' | 'connection' | Event, targetGrou
     mode: mode,
     form: {
       name: "新服务器",
-      protocol: "ssh" as "ssh" | "telnet" | "serial" | "local",
+      protocol: "ssh" as "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local",
       local_shell: "powershell" as "powershell" | "cmd",
       proxy_host: "",
       proxy_port: 22,
@@ -1851,7 +1872,7 @@ function openEditHostModal(h: HostItem, mode: 'all' | 'connection' | 'asset' = '
     isEdit: true,
     mode: mode,
     form: {
-      protocol: (h.protocol || "ssh") as "ssh" | "telnet" | "serial" | "local",
+      protocol: (h.protocol || "ssh") as "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local",
       local_shell: (h.local_shell || "powershell") as "powershell" | "cmd",
       proxy_host: h.proxy_host || '',
       proxy_port: h.proxy_port ?? 22,
@@ -4429,6 +4450,27 @@ async function openSession(h: HostItem) {
     // 正常连接时转发到 SSH；断开状态下按回车触发 reconnectSession 重连
     term.onData((data) => {
       if (newTab.read_only) return;
+      // 跟踪输入行：识别用户主动 exit/logout，避免自动重连把会话拉回来
+      if (h.protocol === "ssh") {
+        for (const ch of data) {
+          if (ch === "\r" || ch === "\n") {
+            const cmd = (newTab.inputLine || "").trim().toLowerCase();
+            if (cmd === "exit" || cmd === "logout") {
+              newTab.intentionalExit = true;
+              cancelAutoReconnect(newTab);
+            }
+            newTab.inputLine = "";
+          } else if (ch === "\x04") {
+            // Ctrl+D：shell 退出（EOF）
+            newTab.intentionalExit = true;
+            cancelAutoReconnect(newTab);
+          } else if (ch === "\x7f" || ch === "\b") {
+            newTab.inputLine = (newTab.inputLine || "").slice(0, -1);
+          } else if (ch >= " ") {
+            newTab.inputLine = (newTab.inputLine || "") + ch;
+          }
+        }
+      }
       if (newTab.alive) {
         if (isGenericProtocol(h.protocol)) {
           invoke("write_generic_session", { sessionId: sid, data });
@@ -4551,6 +4593,21 @@ async function doStartSsh(tab: SessionTab) {
         rows: term.rows || 24,
         cwd: null,
       });
+    } else if (h.protocol === "rlogin") {
+      await invoke<string>("start_rlogin_session", {
+        sessionId: sid,
+        host: h.host,
+        port: h.port || 513,
+        clientUser: h.user || "qshell",
+        serverUser: h.user || "root",
+        termType: h.term_type || "xterm-256color",
+      });
+    } else if (h.protocol === "raw") {
+      await invoke<string>("start_raw_tcp_session", {
+        sessionId: sid,
+        host: h.host,
+        port: h.port || 23,
+      });
     } else if (h.protocol === "telnet") {
       await invoke<string>("start_telnet_session", {
         sessionId: sid,
@@ -4607,6 +4664,7 @@ async function doStartSsh(tab: SessionTab) {
     tab.alive = true;
     tab.is_connecting = false;
     tab.reconnectAttempts = 0;
+    tab.intentionalExit = false;
 
     // 监听视口尺寸变化 (防抖过滤高频重排与 IPC 通信，大幅提升窗口缩放帧率)
     if (!tab.resizeObserver && fit && (term as any).element?.parentElement) {
@@ -7923,7 +7981,7 @@ onUnmounted(() => {
               </div>
 
               <div class="field-col">
-                <label>{{ hostModal.form.protocol === 'serial' ? '波特率' : (hostModal.form.protocol === 'telnet' ? 'Telnet 端口' : 'SSH 端口') }}</label>
+                <label>{{ hostModal.form.protocol === 'serial' ? '波特率' : (hostModal.form.protocol === 'telnet' ? 'Telnet 端口' : hostModal.form.protocol === 'rlogin' ? 'Rlogin 端口' : hostModal.form.protocol === 'raw' ? '端口' : 'SSH 端口') }}</label>
                 <!-- 串口波特率：一体化复合框（框体内直接键入任意数值，右侧内嵌箭头点击弹出预设下拉菜单） -->
                 <div v-if="hostModal.form.protocol === 'serial'" class="combo-baud-wrapper" ref="comboBaudRef">
                   <input 
@@ -8030,7 +8088,7 @@ onUnmounted(() => {
             </div>
 
             <!-- 终端类型（SSH / Telnet 适用；串口不涉及 TERM） -->
-            <div v-if="hostModal.form.protocol === 'ssh' || hostModal.form.protocol === 'telnet'" class="form-row">
+            <div v-if="hostModal.form.protocol === 'ssh' || hostModal.form.protocol === 'telnet' || hostModal.form.protocol === 'rlogin'" class="form-row">
               <label>终端类型 (TERM)</label>
               <CustomSelect
                 :modelValue="hostModal.form.term_type || 'auto'"
@@ -8654,6 +8712,7 @@ onUnmounted(() => {
           <span class="modal-close" @click="showTerminalSettingsModal = false">✕</span>
         </div>
         <div class="modal-body settings-form-body">
+          <div class="settings-group-title">外观</div>
           <!-- 0. 全局界面字体 (除 xterm 终端外统一生效) -->
           <div class="settings-form-row">
             <label class="settings-form-label">界面字体:</label>
@@ -8765,7 +8824,7 @@ onUnmounted(() => {
           </div>
 
           <!-- 6.1 自定义终端背景图 -->
-          <div class="settings-form-row">
+          <div class="settings-form-row bg-image-row">
             <label class="settings-form-label">终端背景图:</label>
             <div class="settings-form-field bg-image-settings">
               <button type="button" class="btn-sec-act btn-browse" @click="chooseTerminalBackgroundImage">
@@ -8780,10 +8839,49 @@ onUnmounted(() => {
               <span v-if="terminalSettings.custom_bg_image" class="bg-image-path" :title="terminalSettings.custom_bg_image">
                 {{ terminalSettings.custom_bg_image }}
               </span>
-              <span v-else class="bg-image-hint">支持 PNG / JPG / WEBP / GIF / BMP，最大 25 MB</span>
+            </div>
+          </div>
+          <div v-if="!terminalSettings.custom_bg_image" class="bg-image-hint-line">支持 PNG / JPG / WEBP / GIF / BMP，最大 25 MB</div>
+
+          <!-- 7. 强调色 (按钮主色) -->
+          <div class="settings-form-row">
+            <label class="settings-form-label">强调色:</label>
+            <div class="settings-form-field accent-picker-row">
+              <ColorPicker
+                :model-value="terminalSettings.accent_color || '#A8C7FA'"
+                :presets="accentPresetColors"
+                title="自定义强调色"
+                @update:model-value="setAccentColor"
+              />
+              <button type="button" class="btn-accent-reset" @click="resetAccentColor">跟随主题</button>
             </div>
           </div>
 
+          <!-- 8. 终端文字色彩 (调色块 + 自定义取色盘) -->
+          <div class="settings-form-row">
+            <label class="settings-form-label">终端文字色彩:</label>
+            <div class="settings-form-field color-palette-row">
+              <button 
+                v-for="c in (terminalSettings.term_bg_mode === 'dark' ? darkPresetColors : lightPresetColors)" 
+                :key="c"
+                type="button"
+                :class="['color-swatch-btn', terminalSettings.terminal_fg_color.toLowerCase() === c.toLowerCase() ? 'active' : '']"
+                :style="{ backgroundColor: c }"
+                @click="terminalSettings.terminal_fg_color = c"
+                :title="c"
+              ></button>
+              <!-- 自定义取色按钮 -->
+              <ColorPicker
+                :model-value="terminalSettings.terminal_fg_color"
+                :presets="terminalSettings.term_bg_mode === 'dark' ? darkPresetColors : lightPresetColors"
+                title="自定义终端文字颜色"
+                @update:model-value="terminalSettings.terminal_fg_color = $event"
+              />
+            </div>
+          </div>
+
+          <div v-if="terminalSettings.custom_bg_image" class="settings-group-title settings-group-toggle" @click="advancedAppearanceOpen = !advancedAppearanceOpen"><span>高级外观</span><span class="settings-group-arrow">{{ advancedAppearanceOpen ? '▾' : '▸' }}</span></div>
+          <div v-show="advancedAppearanceOpen" class="settings-group-body">
           <div v-if="terminalSettings.custom_bg_image" class="settings-form-row">
             <label class="settings-form-label">图片裁切:</label>
             <div class="settings-form-field">
@@ -8833,43 +8931,8 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 7. 强调色 (按钮主色) -->
-          <div class="settings-form-row">
-            <label class="settings-form-label">强调色:</label>
-            <div class="settings-form-field accent-picker-row">
-              <ColorPicker
-                :model-value="terminalSettings.accent_color || '#A8C7FA'"
-                :presets="accentPresetColors"
-                title="自定义强调色"
-                @update:model-value="setAccentColor"
-              />
-              <button type="button" class="btn-accent-reset" @click="resetAccentColor">跟随主题</button>
-            </div>
           </div>
-
-          <!-- 8. 终端文字色彩 (调色块 + 自定义取色盘) -->
-          <div class="settings-form-row">
-            <label class="settings-form-label">终端文字色彩:</label>
-            <div class="settings-form-field color-palette-row">
-              <button 
-                v-for="c in (terminalSettings.term_bg_mode === 'dark' ? darkPresetColors : lightPresetColors)" 
-                :key="c"
-                type="button"
-                :class="['color-swatch-btn', terminalSettings.terminal_fg_color.toLowerCase() === c.toLowerCase() ? 'active' : '']"
-                :style="{ backgroundColor: c }"
-                @click="terminalSettings.terminal_fg_color = c"
-                :title="c"
-              ></button>
-              <!-- 自定义取色按钮 -->
-              <ColorPicker
-                :model-value="terminalSettings.terminal_fg_color"
-                :presets="terminalSettings.term_bg_mode === 'dark' ? darkPresetColors : lightPresetColors"
-                title="自定义终端文字颜色"
-                @update:model-value="terminalSettings.terminal_fg_color = $event"
-              />
-            </div>
-          </div>
-
+          <div class="settings-group-title">行为</div>
           <!-- 8. 开机启动 -->
           <div class="settings-form-row">
             <label class="settings-form-label">开机启动:</label>
@@ -8913,6 +8976,7 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div class="settings-group-title">数据与安全</div>
           <!-- 11. 配置加密（主密码） -->
           <div class="settings-form-row">
             <label class="settings-form-label">配置加密:</label>
@@ -8930,6 +8994,7 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div class="settings-group-title">关于</div>
           <!-- 12. 版本更新 -->
           <div class="settings-form-row">
             <label class="settings-form-label">版本更新:</label>
@@ -8946,6 +9011,8 @@ onUnmounted(() => {
             </div>
           </div>
 
+          <div class="settings-group-title settings-group-toggle" @click="advancedFeaturesOpen = !advancedFeaturesOpen"><span>高级功能</span><span class="settings-group-arrow">{{ advancedFeaturesOpen ? '▾' : '▸' }}</span></div>
+          <div v-show="advancedFeaturesOpen" class="settings-group-body">
           <!-- 14. 断线自动重连 -->
           <div class="settings-form-row">
             <label class="settings-form-label">断线重连:</label>
@@ -8957,7 +9024,7 @@ onUnmounted(() => {
                   class="md3-check-native"
                   @change="updateAutoReconnect(($event.target as HTMLInputElement).checked)"
                 />
-                <span>SSH 连接意外断开时自动重连（3s / 6s / 12s / 24s / 30s，最多 5 次）</span>
+                <span>SSH 连接意外断开时自动重连（最多 5 次）</span>
               </label>
             </div>
           </div>          <!-- 13. 终端会话日志录制 -->
@@ -8975,7 +9042,9 @@ onUnmounted(() => {
               </label>
             </div>
           </div>
+          </div>
 
+          <div class="settings-group-title">备份与恢复</div>
           <!-- 9. 备份相关入口 -->
           <div class="backup-entry-row">
             <button type="button" class="btn-backup-center" @click="openBackupFromSettings">

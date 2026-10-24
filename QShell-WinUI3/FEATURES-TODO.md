@@ -26,6 +26,8 @@
 | 17 | 多语言（中 / 英） | 新功能 | 待实现 | 2 天 |
 | 18 | GitHub Actions 自动构建 | 工程 | 待实现 | 0.5 天 |
 | 19 | SFTP 目录同步（镜像上传） | 新功能 | ✅ 已完成（2026-10-24） | 2 天 |
+| 20 | Raw TCP（裸 TCP 透传） | 新功能 | ✅ 已完成（2026-10-25） | 1 天 |
+| 21 | Rlogin（RFC 1282） | 新功能 | ✅ 已完成（2026-10-25） | 1 天 |
 
 > 3~7 详见 [FEATURES-TERM-TYPE.md](./FEATURES-TERM-TYPE.md) 与 [FEATURES-SSH-CAPABILITIES.md](./FEATURES-SSH-CAPABILITIES.md)。
 
