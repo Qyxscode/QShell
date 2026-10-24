@@ -10,6 +10,8 @@ mod traffic;
 mod local_fs;
 mod keygen;
 mod session_log;
+#[path = "raw_rlogin_service.rs"]
+mod raw_rlogin_service;
 pub mod generic_terminal;
 
 use ssh::{SshManager, start_ssh_session, write_ssh_session, resize_ssh_session, close_ssh_session};
@@ -27,6 +29,7 @@ use monitor::fetch_system_metrics;
 use local_fs::{list_local_dir, local_roots, local_known_folders, local_path_exists, read_local_image_data_url, local_image_thumbnail};
 use keygen::{generate_ssh_key, inspect_ssh_key};
 use session_log::{set_session_logging, get_session_logging};
+use raw_rlogin_service::{start_raw_tcp_session, start_rlogin_session};
 use backup::{
     export_local_backup, import_local_backup, test_webdav_connection,
     webdav_upload_backup, webdav_download_backup
@@ -520,6 +523,8 @@ pub fn run() {
             generate_ssh_key,
             inspect_ssh_key,
             set_session_logging,
+            start_raw_tcp_session,
+            start_rlogin_session,
             get_session_logging,
             fetch_system_metrics,
             audit_host_traffic,

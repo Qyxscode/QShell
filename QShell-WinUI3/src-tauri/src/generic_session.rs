@@ -9,6 +9,8 @@ pub enum ProtocolType {
     Telnet,
     Serial,
     Local,
+    Raw,
+    Rlogin,
 }
 
 pub struct GenericSession {

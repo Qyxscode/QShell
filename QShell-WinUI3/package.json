@@ -1,7 +1,7 @@
 {
     "name": "qshell",
     "private": true,
-    "version": "0.99.75",
+    "version": "0.99.76",
     "type": "module",
     "scripts": {
         "dev": "vite",
