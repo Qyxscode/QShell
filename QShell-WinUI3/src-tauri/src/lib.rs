@@ -12,6 +12,10 @@ mod keygen;
 mod session_log;
 #[path = "raw_rlogin_service.rs"]
 mod raw_rlogin_service;
+#[path = "session_state.rs"]
+mod session_state;
+#[path = "ftp.rs"]
+mod ftp;
 pub mod generic_terminal;
 
 use ssh::{SshManager, start_ssh_session, write_ssh_session, resize_ssh_session, close_ssh_session};
@@ -30,6 +34,8 @@ use local_fs::{list_local_dir, local_roots, local_known_folders, local_path_exis
 use keygen::{generate_ssh_key, inspect_ssh_key};
 use session_log::{set_session_logging, get_session_logging};
 use raw_rlogin_service::{start_raw_tcp_session, start_rlogin_session};
+use session_state::{save_session_state, load_session_state, clear_session_state};
+use ftp::{FtpManager, ftp_connect, ftp_list, ftp_download, ftp_close, ftp_upload, ftp_remove, ftp_rename, ftp_mkdir};
 use backup::{
     export_local_backup, import_local_backup, test_webdav_connection,
     webdav_upload_backup, webdav_download_backup
@@ -463,6 +469,7 @@ pub fn run() {
         .manage(SshManager::new())
         .manage(GenericStreamManager::new())
         .manage(PortForwardManager::new())
+        .manage(FtpManager::new())
         .setup(|app| {
             register_notification_app_id();
             if let Some(window) = app.get_webview_window("main") {
@@ -525,6 +532,17 @@ pub fn run() {
             set_session_logging,
             start_raw_tcp_session,
             start_rlogin_session,
+            save_session_state,
+            load_session_state,
+            clear_session_state,
+            ftp_connect,
+            ftp_list,
+            ftp_download,
+            ftp_close,
+            ftp_upload,
+            ftp_remove,
+            ftp_rename,
+            ftp_mkdir,
             get_session_logging,
             fetch_system_metrics,
             audit_host_traffic,

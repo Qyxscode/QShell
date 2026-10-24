@@ -181,6 +181,9 @@ pub struct AppSettings {
     /// 断线自动重连开关
     #[serde(default)]
     pub auto_reconnect: Option<bool>,
+    /// 启动时是否恢复上次会话
+    #[serde(default)]
+    pub session_restore_enabled: Option<bool>,
     pub webdav: Option<WebDavSettings>,
 }
 
