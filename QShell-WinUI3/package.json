@@ -1,7 +1,7 @@
 {
     "name": "qshell",
     "private": true,
-    "version": "0.99.76",
+    "version": "0.99.77",
     "type": "module",
     "scripts": {
         "dev": "vite",
@@ -19,6 +19,7 @@
         "@tauri-apps/plugin-updater": "^2",
         "@xterm/addon-fit": "^0.11.0",
         "@xterm/addon-search": "^0.16.0",
+        "@xterm/addon-serialize": "^0.14.0",
         "@xterm/addon-webgl": "^0.19.0",
         "@xterm/xterm": "^6.0.0",
         "lucide-vue-next": "^1.0.0",

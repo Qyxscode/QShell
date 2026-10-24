@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick, shallowReactive
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import "@xterm/xterm/css/xterm.css";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -398,7 +399,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.76");
+const appVersion = ref("0.99.77");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -486,7 +487,7 @@ interface TrafficAuditResult {
 
 interface HostItem {
   name: string;
-  protocol?: "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local";
+  protocol?: "ssh" | "telnet" | "rlogin" | "raw" | "ftp" | "serial" | "local";
   host: string;
   port: number;
   user: string;
@@ -508,6 +509,10 @@ interface HostItem {
   proxy_pwd?: string;
   proxy_key?: string;
   proxy_passphrase?: string;
+  file_protocol?: "auto" | "none" | "sftp" | "ftp";
+  ftp_port?: number;
+  ftp_user?: string;
+  ftp_pwd?: string;
   term_type?: string;
   use_agent?: boolean;
   details?: HostDetails;
@@ -549,6 +554,9 @@ interface SessionTab {
   termInstance?: Terminal;
   fitInstance?: FitAddon;
   searchInstance?: SearchAddon;
+  serializeInstance?: SerializeAddon;
+  fileProtocol?: "auto" | "none" | "sftp" | "ftp";
+  fileError?: string;
   resizeObserver?: ResizeObserver;
   unlisten?: UnlistenFn;
   alive: boolean;
@@ -1213,7 +1221,7 @@ const hostModal = ref({
   mode: 'all' as 'all' | 'connection' | 'asset',
   form: {
     name: "",
-    protocol: 'ssh' as 'ssh' | 'telnet' | 'rlogin' | 'raw' | 'serial' | 'local',
+    protocol: 'ssh' as 'ssh' | 'telnet' | 'rlogin' | 'raw' | 'ftp' | 'serial' | 'local',
     local_shell: 'powershell' as 'powershell' | 'cmd',
     proxy_host: '',
     proxy_port: 22,
@@ -1221,6 +1229,10 @@ const hostModal = ref({
     proxy_pwd: '',
     proxy_key: '',
     proxy_passphrase: '',
+  file_protocol: 'auto' as 'auto' | 'none' | 'sftp' | 'ftp',
+  ftp_port: 21,
+  ftp_user: '',
+  ftp_pwd: '',
     host: "",
     port: 22,
     user: "root",
@@ -1451,6 +1463,36 @@ const terminalBgImageLuminance = ref(0);
 const showTerminalSettingsModal = ref(false);
 const autostartEnabled = ref(false);
 
+// --- 终端全屏 ---
+const terminalFullscreen = ref(false);
+let rightPanelWasOpen = false;
+
+function toggleTerminalFullscreen() {
+  terminalFullscreen.value = !terminalFullscreen.value;
+  if (terminalFullscreen.value) {
+    rightPanelWasOpen = isRightPanelOpen.value;
+    isRightPanelOpen.value = false;
+  } else {
+    isRightPanelOpen.value = rightPanelWasOpen;
+  }
+  void nextTick(() => {
+    activeSession.value?.fitInstance?.fit();
+  });
+}
+
+function handleFullscreenKey(e: KeyboardEvent) {
+  // 只处理 keydown：keyup 也会冒泡到这里，会导致一次按键切换两次
+  if (e.type !== "keydown") return;
+  // 终端内部的键盘处理器已经处理过（preventDefault + 停止冒泡），这里不再重复切换
+  if (e.defaultPrevented) return;
+  if (e.key === "F11") {
+    e.preventDefault();
+    toggleTerminalFullscreen();
+  } else if (e.key === "Escape" && terminalFullscreen.value) {
+    e.preventDefault();
+    toggleTerminalFullscreen();
+  }
+}
 // --- 终端搜索（Ctrl+F）---
 const terminalSearch = ref({ show: false, query: "", caseSensitive: false });
 
@@ -1533,6 +1575,69 @@ async function updateAutoReconnect(enabled: boolean) {
     } catch (error) {
       console.warn("[reconnect] 保存自动重连偏好失败:", error);
     }
+  }
+}
+// --- 会话恢复（退出后接续标签与终端缓冲）---
+const sessionRestoreEnabled = ref(true);
+
+async function updateSessionRestore(enabled: boolean) {
+  sessionRestoreEnabled.value = enabled;
+  if (configData.value.settings) {
+    configData.value.settings.session_restore_enabled = enabled;
+    try {
+      await invoke("save_hosts_config", { config: configData.value });
+    } catch (error) {
+      console.warn("[session] 保存会话恢复偏好失败:", error);
+    }
+  }
+  if (!enabled) {
+    try {
+      await invoke("clear_session_state");
+    } catch (clearError) {
+      console.warn("[session] 清除会话快照失败:", clearError);
+    }
+  }
+}
+
+async function saveSessionSnapshot() {
+  if (!isTauri) return;
+  try {
+    if (!sessionRestoreEnabled.value || sessions.value.length === 0) {
+      await invoke("clear_session_state");
+      return;
+    }
+    const tabs = sessions.value.map(tab => ({
+      host: tab.host,
+      name: tab.name,
+      buffer: tab.serializeInstance?.serialize({ scrollback: 2000 }) || "",
+      sftpPath: tab.id === activeSessionId.value ? currentSftpPath.value : "",
+      readOnly: !!tab.read_only,
+    }));
+    await invoke("save_session_state", {
+      json: JSON.stringify({ tabs, savedAt: Date.now() }),
+    });
+  } catch (error) {
+    console.warn("[session] 保存会话快照失败:", error);
+  }
+}
+
+async function restoreSessionSnapshot() {
+  if (!isTauri || !sessionRestoreEnabled.value) return;
+  try {
+    const raw = await invoke<string | null>("load_session_state");
+    if (!raw) return;
+    const snapshot = JSON.parse(raw);
+    if (!snapshot?.tabs?.length) return;
+    for (const item of snapshot.tabs) {
+      if (!item?.host?.host) continue;
+      await openSession(item.host, {
+        buffer: item.buffer || "",
+        sftpPath: item.sftpPath || "",
+        readOnly: !!item.readOnly,
+      });
+    }
+  } catch (error) {
+    console.warn("[session] 恢复会话快照失败:", error);
   }
 }
 // --- 终端会话日志录制 ---
@@ -1691,6 +1796,7 @@ const protocolOptions = [
   { label: "Telnet (网络终端)", value: "telnet" },
   { label: "Rlogin (传统 Unix 登录)", value: "rlogin" },
   { label: "Raw TCP (裸 TCP 透传)", value: "raw" },
+  { label: "FTP (文件传输)", value: "ftp" },
   { label: "Serial (串口硬件终端)", value: "serial" },
   { label: "Local (本地 PowerShell / CMD)", value: "local" },
 ];
@@ -1774,8 +1880,25 @@ function handleBaudOutsideClick(e: MouseEvent) {
   }
 }
 
-function onProtocolChange(newProto: "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local") {
+const fileProtocolOptions = computed(() => {
+  const proto = hostModal.value.form.protocol;
+  const options: Array<{ label: string; value: string }> = [
+    { label: "自动（推荐）", value: "auto" },
+    { label: "不启用", value: "none" },
+  ];
+  if (proto === "ssh") {
+    options.push({ label: "SFTP（走 SSH 通道）", value: "sftp" });
+  }
+  options.push({ label: "FTP（手动指定）", value: "ftp" });
+  return options;
+});
+function onProtocolChange(newProto: "ssh" | "telnet" | "rlogin" | "raw" | "ftp" | "serial" | "local") {
   hostModal.value.form.protocol = newProto;
+  // 文件传输默认值：SSH 用 SFTP，其他协议默认不启用
+  // 非 SSH 协议不支持 SFTP：如果当前选的是 SFTP，切回自动
+  if (newProto !== "ssh" && hostModal.value.form.file_protocol === "sftp") {
+    hostModal.value.form.file_protocol = "auto";
+  }
   if (newProto === "ssh") {
     hostModal.value.form.port = 22;
     if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
@@ -1788,6 +1911,11 @@ function onProtocolChange(newProto: "ssh" | "telnet" | "rlogin" | "raw" | "seria
     }
   } else if (newProto === "rlogin") {
     hostModal.value.form.port = 513;
+    if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
+      hostModal.value.form.host = "127.0.0.1";
+    }
+  } else if (newProto === "ftp") {
+    hostModal.value.form.port = 21;
     if (hostModal.value.form.host.toUpperCase().startsWith("COM")) {
       hostModal.value.form.host = "127.0.0.1";
     }
@@ -1814,7 +1942,7 @@ function openAddHostModal(modeOrEvent?: 'all' | 'connection' | Event, targetGrou
     mode: mode,
     form: {
       name: "新服务器",
-      protocol: "ssh" as "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local",
+      protocol: "ssh" as "ssh" | "telnet" | "rlogin" | "raw" | "ftp" | "serial" | "local",
       local_shell: "powershell" as "powershell" | "cmd",
       proxy_host: "",
       proxy_port: 22,
@@ -1822,6 +1950,10 @@ function openAddHostModal(modeOrEvent?: 'all' | 'connection' | Event, targetGrou
       proxy_pwd: "",
       proxy_key: "",
       proxy_passphrase: "",
+      file_protocol: "auto" as "auto" | "none" | "sftp" | "ftp",
+      ftp_port: 21,
+      ftp_user: "",
+      ftp_pwd: "",
       host: "127.0.0.1",
       port: 22,
       user: "root",
@@ -1872,7 +2004,7 @@ function openEditHostModal(h: HostItem, mode: 'all' | 'connection' | 'asset' = '
     isEdit: true,
     mode: mode,
     form: {
-      protocol: (h.protocol || "ssh") as "ssh" | "telnet" | "rlogin" | "raw" | "serial" | "local",
+      protocol: (h.protocol || "ssh") as "ssh" | "telnet" | "rlogin" | "raw" | "ftp" | "serial" | "local",
       local_shell: (h.local_shell || "powershell") as "powershell" | "cmd",
       proxy_host: h.proxy_host || '',
       proxy_port: h.proxy_port ?? 22,
@@ -1880,6 +2012,10 @@ function openEditHostModal(h: HostItem, mode: 'all' | 'connection' | 'asset' = '
       proxy_pwd: h.proxy_pwd || '',
       proxy_key: h.proxy_key || '',
       proxy_passphrase: h.proxy_passphrase || '',
+  file_protocol: (h.file_protocol || 'auto') as 'auto' | 'none' | 'sftp' | 'ftp',
+  ftp_port: h.ftp_port ?? 21,
+  ftp_user: h.ftp_user || '',
+  ftp_pwd: h.ftp_pwd || '',
       name: h.name,
       host: h.host,
       port: h.port,
@@ -1996,6 +2132,10 @@ async function saveHostForm() {
       orig.proxy_pwd = f.protocol === 'ssh' ? (f.proxy_pwd || undefined) : undefined;
       orig.proxy_key = f.protocol === 'ssh' ? (f.proxy_key || undefined) : undefined;
       orig.proxy_passphrase = f.protocol === 'ssh' ? (f.proxy_passphrase || undefined) : undefined;
+  orig.file_protocol = f.file_protocol && f.file_protocol !== 'none' ? f.file_protocol : undefined;
+  orig.ftp_port = f.file_protocol === 'ftp' ? (Number(f.ftp_port) || 21) : undefined;
+  orig.ftp_user = f.file_protocol === 'ftp' ? (f.ftp_user || undefined) : undefined;
+  orig.ftp_pwd = f.file_protocol === 'ftp' ? (f.ftp_pwd || undefined) : undefined;
     } else {
       // 全部
       orig.name = f.name;
@@ -2020,6 +2160,10 @@ async function saveHostForm() {
       orig.proxy_pwd = f.protocol === 'ssh' ? (f.proxy_pwd || undefined) : undefined;
       orig.proxy_key = f.protocol === 'ssh' ? (f.proxy_key || undefined) : undefined;
       orig.proxy_passphrase = f.protocol === 'ssh' ? (f.proxy_passphrase || undefined) : undefined;
+  orig.file_protocol = f.file_protocol && f.file_protocol !== 'none' ? f.file_protocol : undefined;
+  orig.ftp_port = f.file_protocol === 'ftp' ? (Number(f.ftp_port) || 21) : undefined;
+  orig.ftp_user = f.file_protocol === 'ftp' ? (f.ftp_user || undefined) : undefined;
+  orig.ftp_pwd = f.file_protocol === 'ftp' ? (f.ftp_pwd || undefined) : undefined;
       orig.details = {
         ...orig.details,
         memo: f.memo,
@@ -2104,6 +2248,10 @@ async function saveHostForm() {
           found.proxy_pwd = orig.proxy_pwd;
           found.proxy_key = orig.proxy_key;
           found.proxy_passphrase = orig.proxy_passphrase;
+  found.file_protocol = orig.file_protocol;
+  found.ftp_port = orig.ftp_port;
+  found.ftp_user = orig.ftp_user;
+  found.ftp_pwd = orig.ftp_pwd;
         } else {
           found.name = orig.name;
           found.protocol = orig.protocol;
@@ -2128,6 +2276,10 @@ async function saveHostForm() {
           found.proxy_pwd = orig.proxy_pwd;
           found.proxy_key = orig.proxy_key;
           found.proxy_passphrase = orig.proxy_passphrase;
+  found.file_protocol = orig.file_protocol;
+  found.ftp_port = orig.ftp_port;
+  found.ftp_user = orig.ftp_user;
+  found.ftp_pwd = orig.ftp_pwd;
           found.term_type = orig.term_type;
           found.use_agent = orig.use_agent;
           found.details = orig.details;
@@ -3922,6 +4074,7 @@ async function loadConfig() {
       if (cfg.settings.autostart_enabled !== undefined) autostartPreferred.value = !!cfg.settings.autostart_enabled;
       if (cfg.settings.session_log_enabled !== undefined) sessionLogEnabled.value = !!cfg.settings.session_log_enabled;
       if (cfg.settings.auto_reconnect !== undefined) autoReconnectEnabled.value = !!cfg.settings.auto_reconnect;
+      if (cfg.settings.session_restore_enabled !== undefined) sessionRestoreEnabled.value = !!cfg.settings.session_restore_enabled;
       if (cfg.settings.accent_color) terminalSettings.value.accent_color = cfg.settings.accent_color;
       if (cfg.settings.terminal_bg_image_fit) {
         terminalSettings.value.bg_image_fit = cfg.settings.terminal_bg_image_fit;
@@ -4305,7 +4458,7 @@ function applyTerminalSettings(closeModal: boolean | MouseEvent = true) {
 }
 
 // --- 会话连接与多会话 ---
-async function openSession(h: HostItem) {
+async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: string; readOnly?: boolean }) {
   if (currentView.value !== "workspace") {
     currentView.value = "workspace";
     await nextTick();
@@ -4379,6 +4532,9 @@ async function openSession(h: HostItem) {
   const searchAddon = new SearchAddon();
   term.loadAddon(searchAddon);
   newTab.searchInstance = searchAddon;
+  const serializeAddon = new SerializeAddon();
+  term.loadAddon(serializeAddon);
+  newTab.serializeInstance = serializeAddon;
   term.open(mountEl);
   fit.fit();
   term.focus();
@@ -4400,6 +4556,19 @@ async function openSession(h: HostItem) {
   // 全量键盘快捷键捕获 (复制/粘贴/全选)
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     if (e.type !== "keydown") return true;
+    // 终端内优先处理全屏快捷键，避免 F11 / Esc 被当成终端输入发走
+    if (e.key === "F11") {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleTerminalFullscreen();
+      return false;
+    }
+    if (e.key === "Escape" && terminalFullscreen.value) {
+      e.preventDefault();
+      e.stopPropagation();
+      toggleTerminalFullscreen();
+      return false;
+    }
     const key = String(e.key || "").toLowerCase();
     if (newTab.read_only) {
       // 只读模式只允许复制/选择，不允许粘贴或发送输入
@@ -4508,7 +4677,19 @@ async function openSession(h: HostItem) {
       scheduleAutoReconnect(newTab);
     });
 
-    await doStartSsh(newTab);
+    if (restore?.buffer) {
+      // 从快照恢复：写入上次的终端内容，不自动连接
+      term.write(restore.buffer);
+      term.writeln("\r\n\x1b[36m[会话已恢复，按回车键重新连接]\x1b[0m\r\n");
+      newTab.alive = false;
+      newTab.is_connecting = false;
+      if (restore.readOnly) newTab.read_only = true;
+      if (restore.sftpPath && restore.sftpPath !== currentSftpPath.value) {
+        currentSftpPath.value = restore.sftpPath;
+      }
+    } else {
+      await doStartSsh(newTab);
+    }
   } else {
     // 浏览器预览模式 (兼容 http://localhost:1420 离线/浏览器端即时体验)
     newTab.alive = true;
@@ -4585,7 +4766,21 @@ async function doStartSsh(tab: SessionTab) {
   }
 
   try {
-    if (h.protocol === "local") {
+    if (h.protocol === "ftp") {
+      await invoke("ftp_connect", {
+        sessionId: sid,
+        host: h.host,
+        port: h.port || 21,
+        username: h.user || "anonymous",
+        password: h.pwd || "",
+      });
+      tab.alive = true;
+      tab.is_connecting = false;
+      tab.fileProtocol = "ftp";
+      term.writeln(`\x1b[32m[FTP] 已连接 ${h.host}:${h.port || 21}\x1b[0m`);
+      term.writeln("FTP 会话请在右侧文件面板浏览与下载。");
+      return;
+    } else if (h.protocol === "local") {
       await invoke<string>("start_local_shell_session", {
         sessionId: sid,
         shell: h.local_shell || "powershell",
@@ -4661,6 +4856,38 @@ async function doStartSsh(tab: SessionTab) {
         }
       });
     }
+    // 建立文件会话：auto = SSH 用 SFTP、非 SSH 尝试 FTP；none 不启用
+    let fileProto: "none" | "sftp" | "ftp" = "none";
+    if (h.file_protocol === "none") {
+      fileProto = "none";
+    } else if (h.file_protocol === "sftp") {
+      fileProto = h.protocol === "ssh" ? "sftp" : "none";
+    } else if (h.file_protocol === "ftp") {
+      fileProto = "ftp";
+    } else {
+      fileProto = h.protocol === "ssh" ? "sftp" : "ftp";
+    }
+    tab.fileError = undefined;
+    if (fileProto === "ftp") {
+      try {
+        await invoke("ftp_connect", {
+          sessionId: sid,
+          host: h.host,
+          port: h.ftp_port || 21,
+          username: h.ftp_user || h.user || "anonymous",
+          password: h.ftp_pwd ?? (h.pwd || ""),
+        });
+        tab.fileProtocol = "ftp";
+      } catch (ftpError: any) {
+        tab.fileProtocol = "none";
+        tab.fileError = String(ftpError?.message || ftpError);
+        console.warn("[ftp] 连接 FTP 失败:", ftpError);
+        term.writeln(`\x1b[33m[FTP] 文件传输连接失败: ${tab.fileError}\x1b[0m`);
+      }
+    } else {
+      tab.fileProtocol = fileProto;
+    }
+
     tab.alive = true;
     tab.is_connecting = false;
     tab.reconnectAttempts = 0;
@@ -4925,6 +5152,10 @@ function closeSession(tab: SessionTab) {
   } else {
     invoke("close_ssh_session", { sessionId: tab.id });
   }
+  // 关闭标签时同步关闭 FTP 文件传输会话，避免旧连接一直占用服务器
+  if (tab.fileProtocol === "ftp" || tab.host?.protocol === "ftp") {
+    invoke("ftp_close", { sessionId: tab.id }).catch(() => {});
+  }
   sessionMonitorStats.delete(tab.id);
   const wasActive = activeSessionId.value === tab.id;
   sessions.value = sessions.value.filter(s => s.id !== tab.id);
@@ -4946,31 +5177,48 @@ const sftpErrorMsg = ref("");
 const activeSessionIsSsh = computed(() => {
   const sess = activeSession.value;
   if (!sess) return false;
-  // 只有 SSH 协议支持 SFTP/监控；本地终端、Telnet、串口都不算
-  return sess.host?.protocol === "ssh" || !sess.host?.protocol;
+  // SSH 用 SFTP，FTP 用独立的 FTP 会话；其余协议（本地终端/Telnet/串口）不支持文件面板
+  const protocol = sess.host?.protocol;
+  return protocol === "ssh" || protocol === "ftp" || !protocol;
+});
+
+const activeSessionHasFiles = computed(() => {
+  const sess = activeSession.value;
+  if (!sess) return false;
+  const proto = sess.fileProtocol ?? (sess.host?.protocol === "ssh" || !sess.host?.protocol ? "sftp" : "none");
+  return proto === "sftp" || proto === "ftp";
 });
 
 // 严格判断当前前台活跃会话是否支持 SFTP 文件传输能力 (仅限 SSH 协议且会话在线)
 const canUseSftp = computed(() => {
   const sess = activeSession.value;
-  return !!sess?.alive && activeSessionIsSsh.value;
+  return !!sess?.alive && activeSessionHasFiles.value;
+});
+
+
+const isFtpSession = computed(() => {
+  const sess = activeSession.value;
+  const proto = sess?.fileProtocol ?? (sess?.host?.protocol === "ftp" ? "ftp" : "none");
+  return proto === "ftp";
 });
 
 // 面板与右键菜单共用同一套状态，避免把"无会话/连接中/已断开"误标成"协议不支持"。
-const sftpPanelState = computed<"no-session" | "non-ssh" | "connecting" | "disconnected" | "ready">(() => {
+const sftpPanelState = computed<"no-session" | "non-ssh" | "file-error" | "connecting" | "disconnected" | "ready">(() => {
   const sess = activeSession.value;
   if (!sess) return "no-session";
-  if (!activeSessionIsSsh.value) return "non-ssh";
+  if (sess.fileError) return "file-error";
+  if (!activeSessionHasFiles.value) return "non-ssh";
   if (sess.alive) return "ready";
   return sess.is_connecting ? "connecting" : "disconnected";
 });
 
 const sftpPanelStateText = computed(() => {
   switch (sftpPanelState.value) {
-    case "no-session": return "请先连接 SSH 主机";
-    case "non-ssh": return "当前协议不支持 SFTP";
-    case "connecting": return "SSH 会话连接中...";
-    case "disconnected": return "SSH 会话已断开";
+    case "no-session": return "请先连接主机";
+    case "non-ssh": return "当前会话未启用文件传输";
+    case "file-error": return `文件传输不可用：${activeSession.value?.fileError || ""}`;
+    case "connecting": return "会话连接中...";
+    case "disconnected": return "会话已断开";
     default: return "";
   }
 });
@@ -5072,10 +5320,12 @@ async function fetchSftpFiles(path: string, expectedSessionId = activeSessionId.
   isSftpLoading.value = true;
   sftpErrorMsg.value = "";
   try {
-    const list = await invoke<SftpFileItem[]>("list_sftp_files", {
-      sessionId,
-      remotePath: path,
-    });
+    const list = isFtpSession.value
+      ? await invoke<SftpFileItem[]>("ftp_list", { sessionId, path })
+      : await invoke<SftpFileItem[]>("list_sftp_files", {
+          sessionId,
+          remotePath: path,
+        });
     if (!stillCurrent()) return;
     currentSftpPath.value = path;
     sftpFiles.value = sortSftpList(list);
@@ -5354,13 +5604,28 @@ async function uploadLocalPath(localPath: string) {
   });
 
   try {
-    await invoke("sftp_upload_file", {
-      sessionId: activeSessionId.value,
-      localPath,
-      remotePath,
-      taskId,
-      overwrite,
-    });
+    if (isFtpSession.value) {
+      const uploaded = await invoke<number>("ftp_upload", {
+        sessionId: activeSessionId.value,
+        remotePath,
+        localPath,
+      });
+      const uploadTask = activeTransfers.value.find(t => t.task_id === taskId);
+      if (uploadTask) {
+        uploadTask.transferred = uploaded;
+        uploadTask.total = uploaded || uploadTask.total;
+        uploadTask.status = "completed";
+        uploadTask.speed_bps = 0;
+      }
+    } else {
+      await invoke("sftp_upload_file", {
+        sessionId: activeSessionId.value,
+        localPath,
+        remotePath,
+        taskId,
+        overwrite,
+      });
+    }
     fetchSftpFiles(currentSftpPath.value);
   } catch (e: any) {
     console.error("上传错误:", e);
@@ -5719,12 +5984,27 @@ async function sftpTriggerDownload(item: SftpFileItem): Promise<boolean> {
   });
 
   try {
-    await invoke("sftp_download_file", {
-      sessionId,
-      remotePath,
-      localPath: targetSavePath,
-      taskId,
-    });
+    if (isFtpSession.value) {
+      const transferred = await invoke<number>("ftp_download", {
+        sessionId,
+        remotePath,
+        localPath: targetSavePath,
+      });
+      const ftpTask = activeTransfers.value.find(t => t.task_id === taskId);
+      if (ftpTask) {
+        ftpTask.transferred = transferred;
+        ftpTask.total = transferred || ftpTask.total;
+        ftpTask.status = "completed";
+        ftpTask.speed_bps = 0;
+      }
+    } else {
+      await invoke("sftp_download_file", {
+        sessionId,
+        remotePath,
+        localPath: targetSavePath,
+        taskId,
+      });
+    }
     return true;
   } catch (e: any) {
     console.error("下载错误:", e);
@@ -5875,16 +6155,31 @@ async function executePromptModal() {
 
     if (p.action === "new_folder") {
       const base = currentSftpPath.value.endsWith("/") ? currentSftpPath.value : currentSftpPath.value + "/";
-      await invoke("sftp_mkdir", {
-        sessionId: activeSessionId.value,
-        remotePath: base + val,
-      });
+      if (isFtpSession.value) {
+        await invoke("ftp_mkdir", {
+          sessionId: activeSessionId.value,
+          remotePath: base + val,
+        });
+      } else {
+        await invoke("sftp_mkdir", {
+          sessionId: activeSessionId.value,
+          remotePath: base + val,
+        });
+      }
     } else if (p.action === "rename_file") {
-      await invoke("sftp_rename", {
-        sessionId: activeSessionId.value,
-        oldPath: p.payload.oldPath,
-        newPath: p.payload.base + val,
-      });
+      if (isFtpSession.value) {
+        await invoke("ftp_rename", {
+          sessionId: activeSessionId.value,
+          fromPath: p.payload.oldPath,
+          toPath: p.payload.base + val,
+        });
+      } else {
+        await invoke("sftp_rename", {
+          sessionId: activeSessionId.value,
+          oldPath: p.payload.oldPath,
+          newPath: p.payload.base + val,
+        });
+      }
     }
     p.show = false;
     fetchSftpFiles(currentSftpPath.value);
@@ -5951,11 +6246,19 @@ async function sftpDeleteItemsConfirmed(targets: SftpFileItem[]) {
 
   for (const t of targets) {
     try {
-      await invoke("sftp_remove", {
-        sessionId,
-        remotePath: base + t.name,
-        isDir: t.is_dir,
-      });
+      if (isFtpSession.value) {
+        await invoke("ftp_remove", {
+          sessionId,
+          remotePath: base + t.name,
+          isDir: t.is_dir,
+        });
+      } else {
+        await invoke("sftp_remove", {
+          sessionId,
+          remotePath: base + t.name,
+          isDir: t.is_dir,
+        });
+      }
     } catch (e: any) {
       failCount++;
       lastError = e?.message || String(e);
@@ -6431,6 +6734,14 @@ onMounted(async () => {
     try {
       await appWindow.show();
       await appWindow.setFocus();
+      // 窗口可见后恢复上次会话（延迟一点，确保终端挂载点已就绪）
+      window.setTimeout(() => {
+        void restoreSessionSnapshot();
+      }, 600);
+      // 定期保存快照（覆盖托盘退出等不经过 onCloseRequested 的情况）
+      window.setInterval(() => {
+        void saveSessionSnapshot();
+      }, 60000);
       await invoke("apply_window_rounding").catch(() => {});
     } catch (e) {
       console.warn("[window] 显示主窗口失败:", e);
@@ -6443,6 +6754,7 @@ onMounted(async () => {
   window.addEventListener("qshell-close-selects", handleCloseSelects);
   window.addEventListener("click", handleGlobalClick);
   window.addEventListener("resize", handleWindowResize);
+  window.addEventListener("keydown", handleFullscreenKey);
 
   // 监听 SFTP 文件传输进度广播 (仅在 Tauri 运行环境下监听)
   if (isTauri) {
@@ -6498,6 +6810,12 @@ onMounted(async () => {
         }
         await appWindow?.hide();
       } else {
+        // 退出前保存会话快照，下次启动可恢复
+        try {
+          await saveSessionSnapshot();
+        } catch (snapshotError) {
+          console.warn("[session] 退出前保存快照失败:", snapshotError);
+        }
         // 让 WebView2 正常销毁窗口，Rust 侧在窗口销毁后再退出进程
         await appWindow?.destroy();
       }
@@ -6531,6 +6849,7 @@ onUnmounted(() => {
   window.removeEventListener("qshell-close-selects", handleCloseSelects);
   window.removeEventListener("click", handleGlobalClick);
   window.removeEventListener("resize", handleWindowResize);
+  window.removeEventListener("keydown", handleFullscreenKey);
   window.removeEventListener("focus", handleTrafficSchedulerWake);
   document.removeEventListener("visibilitychange", handleTrafficSchedulerWake);
   if (unlistenCloseRequested) unlistenCloseRequested();
@@ -6547,8 +6866,17 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app-root" @contextmenu="handleAppContextMenu">
+  <div :class="['app-root', terminalFullscreen ? 'is-terminal-fullscreen' : '']" @contextmenu="handleAppContextMenu">
     <!-- 顶部标题栏 (1:1 像素级复刻原版设计) -->
+    <button
+      v-if="terminalFullscreen"
+      class="btn-exit-fullscreen"
+      @click="toggleTerminalFullscreen"
+      title="退出全屏 (F11 / Esc)"
+    >
+      <Icons name="close" size="12" />
+      <span>退出全屏</span>
+    </button>
     <header class="title-bar" @mousedown="startDragging" @dblclick="onTitleBarDoubleClick">
       <div class="brand">
         <span class="logo-title">QShell</span>
@@ -6597,6 +6925,14 @@ onUnmounted(() => {
           title="端口转发（本地转发）"
         >
           <Icons name="bolt" size="24" />
+        </button>
+
+        <button
+          :class="['top-icon-btn', terminalFullscreen ? 'active' : '']"
+          @click="toggleTerminalFullscreen"
+          title="终端全屏 (F11)"
+        >
+          <Icons name="fullscreen" size="20" />
         </button>
 
         <button 
@@ -7048,7 +7384,14 @@ onUnmounted(() => {
               <button class="btn-sftp-action" :disabled="!canUseSftp" @click="fetchSftpFiles(currentSftpPath)" title="跳转/刷新">跳转</button>
             </div>
 
-            <!-- 表头：名称 | 大小 | 权限 (支持拖拽调节宽度) -->
+              <!-- 文件传输不可用提示 -->
+          <div v-if="activeSession && (!activeSessionHasFiles || activeSession.fileError)" class="sftp-file-error">
+            <span class="sftp-file-error-text">
+              {{ activeSession.fileError ? `文件传输不可用：${activeSession.fileError}` : '该主机未启用文件传输（可在编辑主机中设置）' }}
+            </span>
+            <button class="btn-sftp-action" @click="openEditHostModal(activeSession.host, 'connection')">编辑主机</button>
+          </div>
+        <!-- 表头：名称 | 大小 | 权限 (支持拖拽调节宽度) -->
             <div class="sftp-table-header">
               <div class="col-name" :style="{ width: sftpColWidths.name + 'px' }">
                 <span class="col-sort" @click.stop="toggleSftpSort('name')" title="按名称排序">
@@ -8067,7 +8410,26 @@ onUnmounted(() => {
               </div>
             </div>
 
-                        <!-- 跳板机（仅 SSH） -->
+              
+          <!-- 文件传输（Telnet/串口等可配合 FTP 传文件） -->
+          <div v-if="hostModal.form.protocol !== 'local' && hostModal.form.protocol !== 'ftp'" class="form-row">
+            <label>文件传输:</label>
+            <div class="settings-form-field">
+              <CustomSelect
+                v-model="hostModal.form.file_protocol"
+                :options="fileProtocolOptions"
+                customClass="w-full"
+              />
+            </div>
+          </div>
+          <div v-if="hostModal.form.file_protocol === 'ftp' && hostModal.form.protocol !== 'ftp'" class="form-row">
+            <label>FTP 端口:</label>
+            <input v-model.number="hostModal.form.ftp_port" type="number" class="modal-input" style="width: 84px;" placeholder="21" />
+            <label style="width: auto; min-width: 44px;">账号:</label>
+            <input v-model="hostModal.form.ftp_user" class="modal-input flex-1" placeholder="留空复用上方账号" />
+            <input v-model="hostModal.form.ftp_pwd" type="password" class="modal-input flex-1" placeholder="密码（可选）" />
+          </div>
+          <!-- 跳板机（仅 SSH） -->
             <div v-if="hostModal.form.protocol === 'ssh'" class="form-row">
               <label>跳板机 (可选)</label>
               <div class="traffic-input-box">
@@ -9025,6 +9387,20 @@ onUnmounted(() => {
                   @change="updateAutoReconnect(($event.target as HTMLInputElement).checked)"
                 />
                 <span>SSH 连接意外断开时自动重连（最多 5 次）</span>
+              </label>
+            </div>
+          </div>          <!-- 15. 会话恢复 -->
+          <div class="settings-form-row">
+            <label class="settings-form-label">会话恢复:</label>
+            <div class="settings-form-field flex-row-gap">
+              <label class="md3-checkbox-label">
+                <input
+                  type="checkbox"
+                  :checked="sessionRestoreEnabled"
+                  class="md3-check-native"
+                  @change="updateSessionRestore(($event.target as HTMLInputElement).checked)"
+                />
+                <span>启动时恢复上次打开的标签与终端内容</span>
               </label>
             </div>
           </div>          <!-- 13. 终端会话日志录制 -->

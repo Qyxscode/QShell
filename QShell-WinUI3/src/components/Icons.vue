@@ -56,6 +56,14 @@
     <circle cx="12" cy="17" r="1" fill="currentColor"/>
   </svg>
 
+  <!-- 24. 全屏图标（四角箭头） -->
+  <svg v-else-if="name === 'fullscreen'" :width="size || 20" :height="size || 20" viewBox="0 0 24 24" fill="none" class="v-icon">
+    <path d="M4 9V4H9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M20 9V4H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M4 15V20H9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M20 15V20H15" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
   <!-- 7. 闪电/极速终端图标 (整体缩放至与铃铛/月亮同视觉尺寸，2.1px 线宽) -->
   <svg v-else-if="name === 'bolt'" :width="size" :height="size" viewBox="0 0 24 24" fill="none" class="v-icon">
     <path d="M12.8 4.2L5 13.6H12L11.2 19.8L19 10.4H12L12.8 4.2Z" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" fill="currentColor" fill-opacity="0.2"/>
@@ -172,7 +180,7 @@
 
 <script setup lang="ts">
 defineProps<{
-  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close";
+  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen";
   size?: number | string;
   expanded?: boolean;
 }>();
