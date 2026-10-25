@@ -49,3 +49,8 @@ QShell-WinUI3/latest.json
 # 本地发版工具（含签名密钥路径，不进入仓库）
 QShell-WinUI3/打包发版.ps1
 QShell-WinUI3/打包发版.bat
+
+# 临时备份文件
+*.bak
+*.bak_*
+App.vue.*_bak
