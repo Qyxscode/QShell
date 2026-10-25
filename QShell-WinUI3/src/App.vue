@@ -399,7 +399,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.78");
+const appVersion = ref("0.99.79");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -570,6 +570,8 @@ interface SessionTab {
   reconnectAttempts?: number;
   intentionalExit?: boolean;
   inputLine?: string;
+  closingByUser?: boolean;
+  paletteAnimating?: boolean;
   recentOutput?: string;
 }
 
@@ -968,6 +970,86 @@ interface HostAlertInfo {
   hostItem?: HostItem;
 }
 
+// --- 会话事件（掉线 / 重连提示）---
+interface SessionEvent {
+  id: string;
+  sessionId: string;
+  hostName: string;
+  type: "disconnected" | "reconnected" | "manual";
+  ts: number;
+}
+
+const sessionEvents = ref<SessionEvent[]>([]);
+const alertPopoverTab = ref<"hosts" | "events">("hosts");
+const SESSION_EVENT_LIMIT = 20;
+
+const alertTotalCount = computed(
+  () => hostAlertList.value.length + sessionEvents.value.filter(e => e.type === "disconnected").length,
+);
+
+function pushSessionEvent(sessionId: string, hostName: string, type: "disconnected" | "reconnected" | "manual") {
+  if (type === "disconnected") {
+    const existing = sessionEvents.value.find(e => e.sessionId === sessionId && e.type === "disconnected");
+    if (existing) {
+      existing.ts = Date.now();
+      existing.hostName = hostName;
+      return;
+    }
+  } else if (type === "manual") {
+    // 同一会话只保留最近一次手动断开记录
+    sessionEvents.value = sessionEvents.value.filter(
+      e => !(e.sessionId === sessionId && e.type === "manual"),
+    );
+  } else {
+    sessionEvents.value = sessionEvents.value.filter(
+      e => !(e.sessionId === sessionId && e.type === "disconnected"),
+    );
+  }
+  sessionEvents.value.unshift({
+    id: `${sessionId}_${Date.now()}`,
+    sessionId,
+    hostName,
+    type,
+    ts: Date.now(),
+  });
+  if (sessionEvents.value.length > SESSION_EVENT_LIMIT) {
+    sessionEvents.value.length = SESSION_EVENT_LIMIT;
+  }
+}
+
+function disconnectActiveSession() {
+  const tab = activeSession.value;
+  if (!tab) return;
+  pushSessionEvent(tab.id, tab.name, "manual");
+  closeSession(tab);
+}
+
+function removeSessionEvents(sessionId: string) {
+  // 关闭标签时清掉该会话的异常/重连事件，但保留「手动断开」记录
+  sessionEvents.value = sessionEvents.value.filter(
+    e => !(e.sessionId === sessionId && e.type !== "manual"),
+  );
+}
+
+function clearSessionEvents() {
+  sessionEvents.value = [];
+}
+
+function formatSessionEventTime(ts: number) {
+  const date = new Date(ts);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${hh}:${mm}:${ss}`;
+}
+
+function focusSessionEvent(event: SessionEvent) {
+  const tab = sessions.value.find(s => s.id === event.sessionId);
+  if (tab) {
+    switchSession(tab.id);
+    showAlertPopover.value = false;
+  }
+}
 const hostAlertList = ref<HostAlertInfo[]>([]);
 const showAlertPopover = ref(false);
 
@@ -986,6 +1068,14 @@ function toggleAlertPopover(e?: MouseEvent) {
     // 气泡右边界距离窗口右侧为 15px，所以小三角相对于气泡右边界的距离为：
     const popoverRightEdge = window.innerWidth - 15;
     alertPopoverTargetRight.value = Math.max(16, Math.min(340, popoverRightEdge - btnCenterX));
+  }
+  if (!showAlertPopover.value) {
+    // 打开面板时，若有新的掉线事件优先显示事件页签
+    if (sessionEvents.value.some(e => e.type === "disconnected")) {
+      alertPopoverTab.value = "events";
+    } else if (hostAlertList.value.length > 0) {
+      alertPopoverTab.value = "hosts";
+    }
   }
   showAlertPopover.value = !showAlertPopover.value;
 }
@@ -1025,6 +1115,13 @@ function handleGlobalClick(e: MouseEvent) {
     }
   }
 
+  // 点击命令面板外部时收起（钉住除外）
+  if (commandPalette.value.open && !commandPalettePinned.value) {
+    // 面板和触发区内部点击都不算"点击外部"
+    if (!target.closest(".quick-palette-dock") && !target.closest(".quick-palette")) {
+      commandPalette.value.open = false;
+    }
+  }
   // 点击非传输气泡及非传输按钮区域时，自动收起传输气泡
   if (showTransferMonitor.value) {
     if (!target.closest(".transfer-monitor-popover:not(.alert-popover)") && !target.closest(".btn-toggle-transfer")) {
@@ -1605,6 +1702,201 @@ function handleFullscreenKey(e: KeyboardEvent) {
   } else if (e.key === "Escape" && terminalFullscreen.value) {
     e.preventDefault();
     toggleTerminalFullscreen();
+  }
+}
+// --- 快速命令面板（模糊搜索）---
+interface PaletteItem {
+  label: string;
+  cmd: string;
+  source: string;
+}
+
+const commandPalette = ref({ open: false, query: "", selected: 0 });
+const commandPalettePinned = ref(false);
+const paletteIncludeMemos = ref(false);
+
+const paletteAllItems = computed<PaletteItem[]>(() => {
+  const items: PaletteItem[] = [];
+  if (paletteIncludeMemos.value) {
+    for (const group of configData.value.memos || []) {
+      for (const item of group.items || []) {
+        const cmd = (item.cmd || "").trim();
+        if (!cmd) continue;
+        items.push({ label: cmd, cmd, source: group.group || "备忘录" });
+      }
+    }
+  }
+  for (const entry of commandHistory.value.slice(0, 50)) {
+    items.push({ label: entry.cmd, cmd: entry.cmd, source: "历史" });
+  }
+  return items;
+});
+
+function fuzzyMatchIndices(text: string, query: string): number[] | null {
+  if (!query) return [];
+  const indices: number[] = [];
+  let cursor = 0;
+  for (const ch of query) {
+    const idx = text.indexOf(ch, cursor);
+    if (idx === -1) return null;
+    indices.push(idx);
+    cursor = idx + 1;
+  }
+  return indices;
+}
+
+const paletteFiltered = computed<PaletteItem[]>(() => {
+  const q = commandPalette.value.query.trim().toLowerCase();
+  const all = paletteAllItems.value;
+  if (!q) return all.slice(0, 30);
+  const scored: Array<{ item: PaletteItem; score: number }> = [];
+  for (const item of all) {
+    const indices = fuzzyMatchIndices(item.label.toLowerCase(), q);
+    if (!indices) continue;
+    const contiguous = indices[indices.length - 1] - indices[0] + 1 === indices.length ? 100 : 0;
+    const prefix = item.label.toLowerCase().startsWith(q) ? 50 : 0;
+    scored.push({ item, score: prefix + contiguous + (100 - indices[0]) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, 30).map(entry => entry.item);
+});
+
+function paletteHighlight(label: string): Array<{ text: string; hl: boolean }> {
+  const q = commandPalette.value.query.trim().toLowerCase();
+  if (!q) return [{ text: label, hl: false }];
+  const indices = fuzzyMatchIndices(label.toLowerCase(), q);
+  if (!indices) return [{ text: label, hl: false }];
+  const set = new Set(indices);
+  const parts: Array<{ text: string; hl: boolean }> = [];
+  let current = "";
+  let currentHl = false;
+  for (let i = 0; i < label.length; i++) {
+    const hl = set.has(i);
+    if (current && hl !== currentHl) {
+      parts.push({ text: current, hl: currentHl });
+      current = "";
+    }
+    currentHl = hl;
+    current += label[i];
+  }
+  if (current) parts.push({ text: current, hl: currentHl });
+  return parts;
+}
+
+// 命令面板开合：动画期间冻结终端重排，动画结束后一次性适配
+watch(() => commandPalette.value.open, async () => {
+  const tab = activeSession.value;
+  if (tab) tab.paletteAnimating = true;
+  window.setTimeout(() => {
+    if (tab) {
+      tab.paletteAnimating = false;
+      tab.fitInstance?.fit();
+    }
+  }, 850);
+});
+function movePaletteSelection(delta: number) {
+  const list = paletteFiltered.value;
+  if (list.length === 0) return;
+  const next = commandPalette.value.selected + delta;
+  commandPalette.value.selected = (next + list.length) % list.length;
+}
+
+function runPaletteSelected() {
+  const item = paletteFiltered.value[commandPalette.value.selected];
+  if (item) {
+    runPaletteItem(item);
+    return;
+  }
+  // 没有候选时，直接把输入框内容当作命令发送
+  const query = commandPalette.value.query.trim();
+  if (!query) return;
+  closeCommandPalette();
+  commandPalette.value.query = "";
+  commandPalette.value.selected = 0;
+  sendHistoryCommand(query);
+}
+
+function closeCommandPalette() {
+  if (commandPalettePinned.value) return;
+  commandPalette.value.open = false;
+}
+
+function closeCommandPaletteForce() {
+  commandPalette.value.open = false;
+}
+
+function onPaletteDockEnter() {
+  if (!commandPalette.value.open) {
+    openCommandPalette();
+  }
+}
+
+function toggleCommandPalette() {
+  if (commandPalette.value.open) {
+    closeCommandPaletteForce();
+  } else {
+    openCommandPalette();
+  }
+}
+
+function togglePalettePin() {
+  commandPalettePinned.value = !commandPalettePinned.value;
+}
+
+function confirmClearPaletteHistory() {
+  customConfirmModal.value = {
+    show: true,
+    title: "清空命令历史",
+    message: "确定清空全部命令历史记录吗？此操作不可恢复。",
+    items: [],
+    danger: true,
+    confirmText: "确定清空",
+    onConfirm: () => {
+      clearCommandHistory();
+      commandPalette.value.selected = 0;
+      customConfirmModal.value.show = false;
+    },
+  };
+}
+function togglePaletteMemos() {
+  paletteIncludeMemos.value = !paletteIncludeMemos.value;
+  commandPalette.value.selected = 0;
+}
+function openCommandPalette() {
+  commandPalette.value = { open: true, query: "", selected: 0 };
+  void nextTick(() => {
+    document.querySelector<HTMLInputElement>(".qp-input")?.focus();
+  });
+}
+
+function runPaletteItem(item: PaletteItem) {
+  closeCommandPalette();
+  commandPalette.value.query = "";
+  commandPalette.value.selected = 0;
+  sendHistoryCommand(item.cmd);
+}
+
+function onPaletteKeydown(event: KeyboardEvent) {
+  const key = event.key;
+  if (key === "Escape") {
+    event.preventDefault();
+    event.stopPropagation();
+    closeCommandPaletteForce();
+    return;
+  }
+  if (key === "ArrowDown") {
+    event.preventDefault();
+    movePaletteSelection(1);
+    return;
+  }
+  if (key === "ArrowUp") {
+    event.preventDefault();
+    movePaletteSelection(-1);
+    return;
+  }
+  if (key === "Enter") {
+    event.preventDefault();
+    runPaletteSelected();
   }
 }
 // --- 终端搜索（Ctrl+F）---
@@ -4694,6 +4986,13 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
         return false;
       }
     }
+    // 快速命令面板：Ctrl+K
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && key === "k") {
+      e.preventDefault();
+      e.stopPropagation();
+      openCommandPalette();
+      return false;
+    }
     // 终端搜索：Ctrl+F
     if (e.ctrlKey && !e.shiftKey && !e.altKey && key === "f") {
       e.preventDefault();
@@ -4740,7 +5039,7 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
         if (ch === "\r" || ch === "\n") {
           const line = newTab.inputLine || "";
           const cmd = line.trim().toLowerCase();
-          if (h.protocol === "ssh" && (cmd === "exit" || cmd === "logout")) {
+          if (cmd === "exit" || cmd === "logout" || cmd === "quit") {
             newTab.intentionalExit = true;
             cancelAutoReconnect(newTab);
           }
@@ -4748,10 +5047,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
           if (line.trim() && !isPasswordPromptPending(newTab)) recordCommand(line);
           newTab.inputLine = "";
         } else if (ch === "\x04") {
-          if (h.protocol === "ssh") {
-            newTab.intentionalExit = true;
-            cancelAutoReconnect(newTab);
-          }
+          newTab.intentionalExit = true;
+          cancelAutoReconnect(newTab);
         } else if (ch === "\x7f" || ch === "\b") {
           newTab.inputLine = (newTab.inputLine || "").slice(0, -1);
         } else if (ch >= " ") {
@@ -4794,6 +5091,14 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
       }
 
       term.writeln("\r\n\x1b[33m[终端连接已断开。按回车键重新连接...]\x1b[0m\r\n");
+      // 事件分流：用户主动退出记「手动断开」，意外掉线记「异常掉线」
+      if (newTab.closingByUser) {
+        // 关闭标签 / 断开按钮：事件由调用方处理，这里不重复记录
+      } else if (newTab.intentionalExit) {
+        pushSessionEvent(sid, newTab.name, "manual");
+      } else {
+        pushSessionEvent(sid, newTab.name, "disconnected");
+      }
       scheduleAutoReconnect(newTab);
     });
 
@@ -5012,12 +5317,16 @@ async function doStartSsh(tab: SessionTab) {
     tab.is_connecting = false;
     tab.reconnectAttempts = 0;
     tab.intentionalExit = false;
+    if (sessionEvents.value.some(e => e.sessionId === sid && e.type === "disconnected")) {
+      pushSessionEvent(sid, tab.name, "reconnected");
+    }
 
     // 监听视口尺寸变化 (防抖过滤高频重排与 IPC 通信，大幅提升窗口缩放帧率)
     if (!tab.resizeObserver && fit && (term as any).element?.parentElement) {
       const mountEl = (term as any).element.parentElement;
       let resizeTimer: number | null = null;
       const resizeObserver = new ResizeObserver(() => {
+        if (tab.paletteAnimating) return;
         if (tab.alive && term.element) {
           if (resizeTimer) clearTimeout(resizeTimer);
           resizeTimer = window.setTimeout(() => {
@@ -5263,6 +5572,8 @@ function switchSession(sid: string) {
 
 function closeSession(tab: SessionTab) {
   if (tab.is_locked) return; // 锁定状态禁止关闭
+  tab.closingByUser = true;
+  tab.intentionalExit = true;
   cancelAutoReconnect(tab);
   if (tab.resizeObserver) tab.resizeObserver.disconnect();
   if (tab.unlisten) tab.unlisten();
@@ -5277,6 +5588,7 @@ function closeSession(tab: SessionTab) {
     invoke("ftp_close", { sessionId: tab.id }).catch(() => {});
   }
   sessionMonitorStats.delete(tab.id);
+  removeSessionEvents(tab.id);
   const wasActive = activeSessionId.value === tab.id;
   sessions.value = sessions.value.filter(s => s.id !== tab.id);
   if (sessions.value.length === 0) {
@@ -5418,6 +5730,8 @@ function recordCommand(cmd: string) {
 function sendHistoryCommand(cmd: string) {
   const tab = activeSession.value;
   if (!tab?.alive || tab.read_only) return;
+  // 通过快捷面板/历史面板执行的命令也要计入历史
+  recordCommand(cmd);
   const payload = cmd + "\r";
   if (isGenericProtocol(tab.host?.protocol)) {
     void invoke("write_generic_session", { sessionId: tab.id, data: payload });
@@ -7170,12 +7484,12 @@ onUnmounted(() => {
         </button>
         
         <button 
-          :class="['top-icon-btn', 'btn-toggle-alert', hostAlertList.length > 0 ? 'has-alert' : '', showAlertPopover ? 'active' : '']"
+          :class="['top-icon-btn', 'btn-toggle-alert', alertTotalCount > 0 ? 'has-alert' : '', showAlertPopover ? 'active' : '']"
           @click="toggleAlertPopover($event)"
           title="通知 / 到期与流量预警"
         >
           <Icons name="bell" size="24" />
-          <span v-if="hostAlertList.length > 0" class="alert-dot"></span>
+          <span v-if="alertTotalCount > 0" class="alert-dot"></span>
         </button>
 
         <button 
@@ -7554,7 +7868,7 @@ onUnmounted(() => {
               <button 
                 v-if="activeSession"
                 class="btn-danger-disconnect" 
-                @click="closeSession(activeSession)"
+                @click="disconnectActiveSession"
               >
                 断开连接
               </button>
@@ -7562,10 +7876,25 @@ onUnmounted(() => {
           </div>
 
           <div 
-            class="terminal-viewport"
+            :class="['terminal-viewport', commandPalette.open ? 'palette-open' : '']"
             @contextmenu.prevent="openContextMenu($event, 'terminal')"
           >
-            <div v-if="activeSession?.read_only" class="terminal-readonly-badge">只读模式</div>
+            <!-- 快速命令面板：底部手柄 + 向上展开的命令搜索 -->
+          <div class="terminal-stage">
+            <div
+              v-if="sessions.length > 0"
+              class="quick-palette-dock"
+              @mouseenter="onPaletteDockEnter"
+            >
+              <div
+                class="quick-palette-handle"
+                title="快速命令 (Ctrl+K) · 悬停展开"
+                @click="toggleCommandPalette"
+              >
+                <span class="qp-handle-bar"></span>
+              </div>
+            </div>
+        <div v-if="activeSession?.read_only" class="terminal-readonly-badge">只读模式</div>
             <div v-if="terminalSearch.show" class="terminal-search-bar">
               <input
                 id="terminal-search-input"
@@ -7615,6 +7944,56 @@ onUnmounted(() => {
               :id="'term-' + tab.id"
               :class="['terminal-mount-box', { 'is-active': activeSessionId === tab.id }]"
             ></div>
+          </div>
+          <div
+            :class="['quick-palette', commandPalette.open ? 'is-open' : '']"
+            @keydown="onPaletteKeydown"
+            @contextmenu.prevent.stop
+          >
+                <div class="qp-list">
+                  <div
+                    v-for="(item, idx) in paletteFiltered"
+                    :key="item.cmd + idx"
+                    :class="['qp-item', idx === commandPalette.selected ? 'active' : '']"
+                    @click="runPaletteItem(item)"
+                  >
+                    <span class="qp-label">
+                      <span
+                        v-for="(part, pidx) in paletteHighlight(item.label)"
+                        :key="pidx"
+                        :class="{ 'qp-hl': part.hl }"
+                      >{{ part.text }}</span>
+                    </span>
+                    <span class="qp-source">{{ item.source }}</span>
+                  </div>
+                  <div v-if="paletteFiltered.length === 0" class="qp-empty">没有匹配的命令</div>
+                </div>
+              <div class="qp-input-row">
+                <span class="qp-prompt">⌘</span>
+                <input
+                  class="qp-input"
+                  v-model="commandPalette.query"
+                  placeholder="输入命令关键字..."
+                  spellcheck="false"
+                  @input="commandPalette.selected = 0"
+                />
+                <button
+                  :class="['qp-toggle-btn', paletteIncludeMemos ? 'active' : '']"
+                  @click="togglePaletteMemos"
+                  title="显示/隐藏备忘录命令"
+                >备忘录</button>
+                <button
+                  :class="['qp-toggle-btn', commandPalettePinned ? 'active' : '']"
+                  @click="togglePalettePin"
+                  title="钉住面板（不自动收起）"
+                ><Icons name="pin" size="13" /></button>
+                <button
+                  class="qp-toggle-btn"
+                  @click="confirmClearPaletteHistory"
+                  title="清空命令历史"
+                >清空历史</button>
+              </div>
+            </div>
           </div>
         </main>
 
@@ -7983,44 +8362,80 @@ onUnmounted(() => {
       class="transfer-monitor-popover alert-popover" 
       :style="{ '--arrow-right': (alertPopoverTargetRight - 8) + 'px' }"
     >
-      <div class="transfer-popover-header alert-head">
-        <span class="alert-head-title">告警与事件提醒</span>
-        <div class="alert-head-actions">
-          <button 
-            v-if="hostAlertList.length > 0" 
-            class="btn-popover-ignore" 
-            @click="clearAllAlerts"
-          >
-            全部忽略
-          </button>
-          <span class="popover-close" @click="showAlertPopover = false">✕</span>
-        </div>
-      </div>
-      <div class="transfer-task-list alert-scroll-list">
-        <div v-if="hostAlertList.length === 0" class="alert-empty-state">
-          当前所有主机状态良好，无待处理告警
-        </div>
-        <div 
-          v-else 
-          v-for="(al, idx) in hostAlertList" 
-          :key="idx" 
-          class="alert-card-item"
-          @click="handleAlertClick(al)"
-          title="点击跳转至该主机详情"
-        >
-          <div class="alert-item-dot-col">
-            <span :class="['alert-indicator-dot', al.type]"></span>
-          </div>
-          <div class="alert-item-content">
-            <div class="alert-item-msg">
-              <span class="alert-item-hname">[{{ al.hostName }}]</span>
-              {{ al.msg }}
+              <div class="transfer-popover-header alert-head">
+                <span class="alert-head-title">告警与事件</span>
+                <div class="alert-head-actions">
+                  <button
+                    :class="['alert-tab-btn', alertPopoverTab === 'hosts' ? 'active' : '']"
+                    @click="alertPopoverTab = 'hosts'"
+                  >告警 {{ hostAlertList.length }}</button>
+                  <button
+                    :class="['alert-tab-btn', alertPopoverTab === 'events' ? 'active' : '']"
+                    @click="alertPopoverTab = 'events'"
+                  >事件 {{ sessionEvents.length }}</button>
+                  <button
+                    v-if="alertPopoverTab === 'hosts' && hostAlertList.length > 0"
+                    class="btn-popover-ignore"
+                    @click="clearAllAlerts"
+                  >
+                    忽略
+                  </button>
+                  <span class="popover-close" @click="showAlertPopover = false">✕</span>
+                </div>
+              </div>
+              <div class="transfer-task-list alert-scroll-list">
+                <template v-if="alertPopoverTab === 'hosts'">
+                  <div v-if="hostAlertList.length === 0" class="alert-empty-state">
+                    当前所有主机状态良好，无待处理告警
+                  </div>
+                  <div
+                    v-else
+                    v-for="(al, idx) in hostAlertList"
+                    :key="idx"
+                    class="alert-card-item"
+                    @click="handleAlertClick(al)"
+                    title="点击跳转至该主机详情"
+                  >
+                    <div class="alert-item-dot-col">
+                      <span :class="['alert-indicator-dot', al.type]"></span>
+                    </div>
+                    <div class="alert-item-content">
+                      <div class="alert-item-msg">
+                        <span class="alert-item-hname">[{{ al.hostName }}]</span>
+                        {{ al.msg }}
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-else>
+                  <div v-if="sessionEvents.length === 0" class="alert-empty-state">
+                    暂无会话事件
+                  </div>
+                  <template v-else>
+                    <div
+                      v-for="ev in sessionEvents"
+                      :key="ev.id"
+                      class="alert-card-item session-event-item"
+                      @click="focusSessionEvent(ev)"
+                      title="点击切换到该标签"
+                    >
+                      <div class="alert-item-dot-col">
+                        <span :class="['session-event-dot', ev.type]"></span>
+                      </div>
+                      <div class="alert-item-content">
+                        <div class="alert-item-msg">
+                          <span class="alert-item-hname">[{{ ev.hostName }}]</span>
+                          {{ ev.type === 'disconnected' ? '连接已断开（异常）' : ev.type === 'manual' ? '已手动断开' : '已重新连接' }}
+                        </div>
+                      </div>
+                      <span class="session-event-time">{{ formatSessionEventTime(ev.ts) }}</span>
+                    </div>
+                    <button class="btn-popover-ignore session-event-clear" @click="clearSessionEvents">清空事件</button>
+                  </template>
+                </template>
+              </div>
             </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    </Transition>
+          </Transition>
 
     <!-- 悬浮传输监视器 (SFTPTransferMonitorPopover) -->
     <Transition name="popover-fade">

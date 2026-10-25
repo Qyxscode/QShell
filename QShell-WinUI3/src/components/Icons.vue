@@ -172,6 +172,10 @@
     <path d="M8 3.5V12.5M4 8.5L8 12.5L12 8.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>
 
+  <svg v-else-if="name === 'pin'" :width="size || 14" :height="size || 14" viewBox="0 0 24 24" fill="none" class="v-icon">
+    <path d="M9.5 3.5H14.5L13.5 9.5L16.5 12.5V14.5H7.5V12.5L10.5 9.5L9.5 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" fill="currentColor" fill-opacity="0.15"/>
+    <path d="M12 14.5V20.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+  </svg>
   <!-- 23. 关闭/删除矢量叉号 (✕) -->
   <svg v-else-if="name === 'close'" :width="size || 12" :height="size || 12" viewBox="0 0 16 16" fill="none" class="v-icon">
     <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
@@ -180,7 +184,7 @@
 
 <script setup lang="ts">
 defineProps<{
-  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen";
+  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin";
   size?: number | string;
   expanded?: boolean;
 }>();
