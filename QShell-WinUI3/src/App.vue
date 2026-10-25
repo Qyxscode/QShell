@@ -11,6 +11,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import Icons from "./components/Icons.vue";
 import TraceModal from "./components/TraceModal.vue";
+import { THEME_PRESETS, findThemePreset, themeVariant } from "./themes";
 import { fuzzyMatchIndices } from "./utils/fuzzy";
 import { stripAnsiForCheck } from "./utils/ansi";
 import {
@@ -316,9 +317,12 @@ function ensureReadableFg(fg: string, bg: string, fallback: string): string {
 }
 
 function executeThemeChange() {
+  const activePreset = findThemePreset(themePresetId.value);
+  const isClassicTheme = activePreset.id === "default" || activePreset.id === "default-light";
   const newTheme = themeMode.value === "dark" ? "light" : "dark";
   themeMode.value = newTheme;
   document.documentElement.setAttribute("data-theme", newTheme);
+  // 保留当前配色主题（主题配色优先于明暗基础）
   try {
     localStorage.setItem("qshell_theme_mode", newTheme);
   } catch (e) {}
@@ -346,10 +350,46 @@ function executeThemeChange() {
   }
 
   applyTerminalSettings(false); // 同步终端外观，但不关闭偏好弹窗
+  if (!isClassicTheme) {
+    const variant = themeVariant(activePreset, newTheme === "dark");
+    terminalSettings.value.term_bg_mode = newTheme === "dark" ? "dark" : "light";
+    terminalSettings.value.terminal_bg_color = variant.term.background;
+    terminalSettings.value.terminal_fg_color = variant.term.foreground;
+    terminalSettings.value.accent_color = variant.primary;
+    applyTerminalSettings(false);
+  }
 }
 
 // 现代化圆形扩散亮暗切换动画 (从右下角/点击按钮源向全屏水波涟漪扩大)
 let themeTransitionToken = 0;
+
+// --- 配色主题预设 ---
+const themePresetId = ref("default");
+
+async function applyThemePreset(id: string, persist = true) {
+  const preset = findThemePreset(id);
+  themePresetId.value = preset.id;
+  document.documentElement.setAttribute("data-theme-preset", preset.id);
+  // 明暗由顶栏控制，主题提供暗/亮两版配色
+  const isDark = themeMode.value === "dark";
+  const variant = themeVariant(preset, isDark);
+  // 强调色跟随主题主色（用户之后仍可单独微调）
+  terminalSettings.value.accent_color = variant.primary;
+  // 终端配色跟随主题
+  terminalSettings.value.term_bg_mode = isDark ? "dark" : "light";
+  terminalSettings.value.terminal_bg_color = variant.term.background;
+  terminalSettings.value.terminal_fg_color = variant.term.foreground;
+  applyTerminalSettings(false);
+
+  if (persist && configData.value.settings) {
+    configData.value.settings.theme_preset = preset.id;
+    try {
+      await invoke("save_hosts_config", { config: configData.value });
+    } catch (error) {
+      console.warn("[theme] 保存主题预设失败:", error);
+    }
+  }
+}
 function toggleTheme(event?: MouseEvent) {
   // 全局动画关闭或系统要求减少动态效果时，直接切换，不创建 View Transition。
   const prefersReducedMotion =
@@ -410,7 +450,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.81");
+const appVersion = ref("0.99.82");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -4490,6 +4530,9 @@ async function loadConfig() {
       if (cfg.settings.minimize_to_tray !== undefined) terminalSettings.value.minimize_to_tray = !!cfg.settings.minimize_to_tray;
       if (cfg.settings.autostart_enabled !== undefined) autostartPreferred.value = !!cfg.settings.autostart_enabled;
       if (cfg.settings.session_log_enabled !== undefined) sessionLogEnabled.value = !!cfg.settings.session_log_enabled;
+      if (cfg.settings.theme_preset) {
+        void applyThemePreset(cfg.settings.theme_preset, false);
+      }
       if (cfg.settings.auto_reconnect !== undefined) autoReconnectEnabled.value = !!cfg.settings.auto_reconnect;
       if (cfg.settings.session_restore_enabled !== undefined) sessionRestoreEnabled.value = !!cfg.settings.session_restore_enabled;
       if (cfg.settings.accent_color) terminalSettings.value.accent_color = cfg.settings.accent_color;
@@ -9773,6 +9816,28 @@ onUnmounted(() => {
         </div>
         <div class="modal-body settings-form-body">
           <div class="settings-group-title">外观</div>
+          <!-- 配色主题预设 -->
+          <div class="theme-preset-block">
+            <label class="settings-form-label">配色主题:</label>
+            <div class="theme-preset-grid">
+              <button
+                v-for="preset in THEME_PRESETS"
+                :key="preset.id"
+                :class="['theme-preset-btn', themePresetId === preset.id ? 'active' : '']"
+                @click="applyThemePreset(preset.id)"
+              >
+                <span class="theme-preset-name">{{ preset.name }}</span>
+                <span class="theme-preset-swatches">
+                  <span
+                    v-for="(c, ci) in (themeMode === 'dark' ? preset.dark.swatch : preset.light.swatch)"
+                    :key="ci"
+                    class="theme-swatch"
+                    :style="{ background: c }"
+                  ></span>
+                </span>
+              </button>
+            </div>
+          </div>
           <!-- 0. 全局界面字体 (除 xterm 终端外统一生效) -->
           <div class="settings-form-row">
             <label class="settings-form-label">界面字体:</label>
@@ -9896,11 +9961,9 @@ onUnmounted(() => {
                 class="btn-cancel"
                 @click="removeTerminalBackgroundImage"
               >移除背景图</button>
-              <span v-if="terminalSettings.custom_bg_image" class="bg-image-path" :title="terminalSettings.custom_bg_image">
-                {{ terminalSettings.custom_bg_image }}
-              </span>
             </div>
           </div>
+          <div v-if="terminalSettings.custom_bg_image" class="bg-image-path-line" :title="terminalSettings.custom_bg_image">{{ terminalSettings.custom_bg_image }}</div>
           <div v-if="!terminalSettings.custom_bg_image" class="bg-image-hint-line">支持 PNG / JPG / WEBP / GIF / BMP，最大 25 MB</div>
 
           <!-- 7. 强调色 (按钮主色) -->
