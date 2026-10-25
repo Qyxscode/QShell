@@ -7229,3 +7229,103 @@ body,
 .quick-palette.is-open {
   transition: max-height 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease !important;
 }
+/* 端口转发类型切换 */
+.forward-type-switch {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.forward-type-btn {
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.forward-type-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+/* 转发规则类型标注 */
+.forward-type-tag {
+  display: inline-block;
+  margin-right: 8px;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 10px;
+  line-height: 16px;
+  border: 1px solid var(--border-card);
+  color: var(--text-sub);
+  vertical-align: 1px;
+}
+
+.forward-type-tag.local {
+  color: #6cb6ff;
+  border-color: rgba(108, 182, 255, 0.45);
+  background: rgba(108, 182, 255, 0.10);
+}
+
+.forward-type-tag.remote {
+  color: #b48cff;
+  border-color: rgba(180, 140, 255, 0.45);
+  background: rgba(180, 140, 255, 0.10);
+}
+
+.forward-type-tag.socks {
+  color: #4ade80;
+  border-color: rgba(74, 222, 128, 0.45);
+  background: rgba(74, 222, 128, 0.10);
+}
+/* 转发规则：两列对齐（标签/状态同列，描述/按钮同列） */
+.forward-rule-block {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.03);
+  margin-bottom: 8px;
+}
+
+.forward-type-tag {
+  justify-self: start;
+}
+
+.forward-rule-desc {
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.forward-status {
+  justify-self: start;
+}
+
+.forward-rule-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.forward-error-line {
+  grid-column: 1 / -1;
+  font-size: 11px;
+  color: #f48771;
+}
+
+.forward-draft-hint {
+  flex: 1;
+  font-size: 11px;
+  color: var(--text-sub);
+}
