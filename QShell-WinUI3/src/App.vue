@@ -410,7 +410,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.80");
+const appVersion = ref("0.99.81");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -4148,9 +4148,13 @@ async function submitUnlock(password: string) {
 // --- 端口转发（本地转发）---
 interface ForwardRule {
   id: string;
+  type: "local" | "remote" | "socks";
   localPort: number;
   remoteHost: string;
   remotePort: number;
+  bindPort: number;
+  targetHost: string;
+  targetPort: number;
 }
 
 const forwardModal = ref({
@@ -4160,7 +4164,16 @@ const forwardModal = ref({
   running: {} as Record<string, boolean>,
   actualPorts: {} as Record<string, number>,
   errors: {} as Record<string, string>,
-  draft: { localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 },
+  draft: {
+    type: "local" as "local" | "remote" | "socks",
+    socksPort: 1080,
+    localPort: 8080,
+    remoteHost: "127.0.0.1",
+    remotePort: 80,
+    bindPort: 9000,
+    targetHost: "127.0.0.1",
+    targetPort: 80,
+  },
 });
 
 function forwardStorageKey(hostKey: string) {
@@ -4202,7 +4215,16 @@ async function openForwardModal() {
     running: {},
     actualPorts: {},
     errors: {},
-    draft: { localPort: 8080, remoteHost: "127.0.0.1", remotePort: 80 },
+    draft: {
+      type: "local" as "local" | "remote" | "socks",
+      socksPort: 1080,
+      localPort: 8080,
+      remoteHost: "127.0.0.1",
+      remotePort: 80,
+      bindPort: 9000,
+      targetHost: "127.0.0.1",
+      targetPort: 80,
+    },
   };
   // 关闭面板不会停止转发：重新打开时把仍在运行的任务状态恢复回来
   try {
@@ -4212,6 +4234,18 @@ async function openForwardModal() {
       forwardModal.value.running[info.id] = true;
       forwardModal.value.actualPorts[info.id] = info.local_port;
     }
+    const socksRunning = await invoke<Array<{ id: string; local_port: number }>>("list_socks_forwards");
+    for (const info of socksRunning) {
+      if (!rules.some(r => r.id === info.id)) continue;
+      forwardModal.value.running[info.id] = true;
+      forwardModal.value.actualPorts[info.id] = info.local_port;
+    }
+    const remoteRunning = await invoke<Array<{ id: string; remote_bind_port: number }>>("list_remote_forwards");
+    for (const info of remoteRunning) {
+      if (!rules.some(r => r.id === info.id)) continue;
+      forwardModal.value.running[info.id] = true;
+      forwardModal.value.actualPorts[info.id] = info.remote_bind_port;
+    }
   } catch {
     /* 忽略查询失败 */
   }
@@ -4219,16 +4253,24 @@ async function openForwardModal() {
 
 function addForwardRule() {
   const m = forwardModal.value;
-  const localPort = Number(m.draft.localPort) || 0;
-  const remotePort = Number(m.draft.remotePort) || 0;
-  const remoteHost = m.draft.remoteHost.trim();
-  if (!remoteHost || remotePort <= 0) return;
-  m.rules.push({
-    id: `fwd_${Date.now()}_${Math.floor(Math.random() * 1000)}`,
-    localPort,
-    remoteHost,
-    remotePort,
-  });
+  const id = `fwd_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  if (m.draft.type === "socks") {
+    const localPort = Number(m.draft.socksPort) || 0;
+    if (localPort <= 0) return;
+    m.rules.push({ id, type: "socks", localPort, remoteHost: "", remotePort: 0, bindPort: 0, targetHost: "", targetPort: 0 });
+  } else if (m.draft.type === "remote") {
+    const bindPort = Number(m.draft.bindPort) || 0;
+    const targetHost = m.draft.targetHost.trim();
+    const targetPort = Number(m.draft.targetPort) || 0;
+    if (!targetHost || targetPort <= 0 || bindPort <= 0) return;
+    m.rules.push({ id, type: "remote", localPort: 0, remoteHost: "", remotePort: 0, bindPort, targetHost, targetPort });
+  } else {
+    const localPort = Number(m.draft.localPort) || 0;
+    const remotePort = Number(m.draft.remotePort) || 0;
+    const remoteHost = m.draft.remoteHost.trim();
+    if (!remoteHost || remotePort <= 0) return;
+    m.rules.push({ id, type: "local", localPort, remoteHost, remotePort, bindPort: 0, targetHost: "", targetPort: 0 });
+  }
   saveForwardRules(m.hostKey, m.rules);
 }
 
@@ -4238,13 +4280,27 @@ async function startForwardRule(rule: ForwardRule) {
   if (!sess) return;
   m.errors[rule.id] = "";
   try {
-    const port = await invoke<number>("start_local_forward", {
-      forwardId: rule.id,
-      sessionId: sess.id,
-      localPort: rule.localPort,
-      remoteHost: rule.remoteHost,
-      remotePort: rule.remotePort,
-    });
+    const port = rule.type === "socks"
+      ? await invoke<number>("start_socks_forward", {
+          forwardId: rule.id,
+          sessionId: sess.id,
+          localPort: rule.localPort,
+        })
+      : rule.type === "remote"
+      ? await invoke<number>("start_remote_forward", {
+          forwardId: rule.id,
+          sessionId: sess.id,
+          remoteBindPort: rule.bindPort,
+          localHost: rule.targetHost,
+          localPort: rule.targetPort,
+        })
+      : await invoke<number>("start_local_forward", {
+          forwardId: rule.id,
+          sessionId: sess.id,
+          localPort: rule.localPort,
+          remoteHost: rule.remoteHost,
+          remotePort: rule.remotePort,
+        });
     m.actualPorts[rule.id] = port;
     m.running[rule.id] = true;
   } catch (e: any) {
@@ -4256,7 +4312,10 @@ async function startForwardRule(rule: ForwardRule) {
 async function stopForwardRule(rule: ForwardRule) {
   const m = forwardModal.value;
   try {
-    await invoke("stop_local_forward", { forwardId: rule.id });
+    const stopCmd = rule.type === "socks"
+      ? "stop_socks_forward"
+      : rule.type === "remote" ? "stop_remote_forward" : "stop_local_forward";
+    await invoke(stopCmd, { forwardId: rule.id });
   } catch {
     /* 已停止 */
   }
@@ -9578,59 +9637,66 @@ onUnmounted(() => {
       <div v-if="forwardModal.show" class="modal-overlay" @mousedown.self="forwardModal.show = false">
         <div class="modal-card forward-modal">
           <div class="modal-header">
-            <span class="modal-title">端口转发（本地转发）</span>
+            <span class="modal-title">端口转发</span>
             <span class="modal-close" @click="forwardModal.show = false">✕</span>
           </div>
           <div class="modal-body">
-            <p class="confirm-modal-text">
+            <div class="forward-type-switch">
+              <button :class="['forward-type-btn', forwardModal.draft.type === 'local' ? 'active' : '']" @click="forwardModal.draft.type = 'local'">本地转发 (-L)</button>
+              <button :class="['forward-type-btn', forwardModal.draft.type === 'remote' ? 'active' : '']" @click="forwardModal.draft.type = 'remote'">远程转发 (-R)</button>
+              <button :class="['forward-type-btn', forwardModal.draft.type === 'socks' ? 'active' : '']" @click="forwardModal.draft.type = 'socks'">SOCKS5 (-D)</button>
+            </div>
+
+            <p v-if="forwardModal.draft.type === 'local'" class="confirm-modal-text">
               浏览器访问 <b>127.0.0.1:{{ forwardModal.draft.localPort || "本机端口" }}</b>
               → 实际连接到服务器上的
               <b>{{ forwardModal.draft.remoteHost || "目标地址" }}:{{ forwardModal.draft.remotePort || "目标端口" }}</b>
             </p>
-            <div class="forward-draft-row">
-              <input
-                v-model.number="forwardModal.draft.localPort"
-                type="number"
-                class="modal-input"
-                placeholder="本机端口（浏览器访问）"
-                style="width: 150px;"
-              />
+            <p v-else-if="forwardModal.draft.type === 'remote'" class="confirm-modal-text">
+              服务器监听 <b>:{{ forwardModal.draft.bindPort || "远端端口" }}</b>
+              → 转发到本机的
+              <b>{{ forwardModal.draft.targetHost || "本地地址" }}:{{ forwardModal.draft.targetPort || "本地端口" }}</b>
+            </p>
+            <p v-else class="confirm-modal-text">
+              浏览器配置 SOCKS5 代理 <b>127.0.0.1:{{ forwardModal.draft.socksPort || "1080" }}</b>
+              → 所有流量经服务器代理转发
+            </p>
+
+            <div v-if="forwardModal.draft.type === 'local'" class="forward-draft-row">
+              <input v-model.number="forwardModal.draft.localPort" type="number" class="modal-input" placeholder="本机端口（浏览器访问）" style="width: 150px;" />
               <span class="forward-arrow">→</span>
-              <input
-                v-model="forwardModal.draft.remoteHost"
-                class="modal-input"
-                placeholder="目标地址（服务器上的）"
-                style="flex: 1;"
-              />
-              <input
-                v-model.number="forwardModal.draft.remotePort"
-                type="number"
-                class="modal-input"
-                placeholder="目标端口"
-                style="width: 100px;"
-              />
+              <input v-model="forwardModal.draft.remoteHost" class="modal-input" placeholder="目标地址（服务器上的）" style="flex: 1;" />
+              <input v-model.number="forwardModal.draft.remotePort" type="number" class="modal-input" placeholder="目标端口" style="width: 100px;" />
               <button class="btn-sec-act" @click="addForwardRule">添加</button>
             </div>
+            <div v-else-if="forwardModal.draft.type === 'remote'" class="forward-draft-row">
+              <input v-model.number="forwardModal.draft.bindPort" type="number" class="modal-input" placeholder="远端监听端口" style="width: 130px;" />
+              <span class="forward-arrow">←</span>
+              <input v-model="forwardModal.draft.targetHost" class="modal-input" placeholder="本地目标地址" style="flex: 1;" />
+              <input v-model.number="forwardModal.draft.targetPort" type="number" class="modal-input" placeholder="本地端口" style="width: 100px;" />
+              <button class="btn-sec-act" @click="addForwardRule">添加</button>
+            </div>
+            <div v-else class="forward-draft-row">
+              <input v-model.number="forwardModal.draft.socksPort" type="number" class="modal-input" placeholder="本地 SOCKS5 端口" style="width: 150px;" />
+              <span class="forward-arrow">→</span>
+              <span class="forward-draft-hint">经 SSH 通道代理所有 TCP 连接</span>
+              <button class="btn-sec-act" @click="addForwardRule">添加</button>
+            </div>
+
             <div v-if="forwardModal.rules.length === 0" class="sftp-empty">还没有转发规则</div>
             <div v-for="rule in forwardModal.rules" :key="rule.id" class="forward-rule-block">
-              <div class="forward-rule-desc-line">
-                浏览器 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 服务器 {{ rule.remoteHost }}:{{ rule.remotePort }}
-              </div>
+              <span :class="['forward-type-tag', rule.type]">{{ rule.type === 'remote' ? '远程 -R' : rule.type === 'socks' ? 'SOCKS5 -D' : '本地 -L' }}</span>
+              <span class="forward-rule-desc">
+                <template v-if="rule.type === 'remote'">服务器 :{{ forwardModal.actualPorts[rule.id] || rule.bindPort }} → 本机 {{ rule.targetHost }}:{{ rule.targetPort }}</template>
+                <template v-else-if="rule.type === 'socks'">SOCKS5 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 经服务器代理</template>
+                <template v-else>浏览器 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 服务器 {{ rule.remoteHost }}:{{ rule.remotePort }}</template>
+              </span>
+              <span :class="['forward-status', forwardModal.running[rule.id] ? 'on' : 'off']">{{ forwardModal.running[rule.id] ? '运行中' : '已停止' }}</span>
               <div class="forward-rule-actions">
-                <span :class="['forward-status', forwardModal.running[rule.id] ? 'on' : 'off']">
-                  {{ forwardModal.running[rule.id] ? '运行中' : '已停止' }}
-                </span>
-                <button
-                  class="btn-sec-act"
-                  @click="forwardModal.running[rule.id] ? stopForwardRule(rule) : startForwardRule(rule)"
-                >
-                  {{ forwardModal.running[rule.id] ? '停止' : '启动' }}
-                </button>
+                <button class="btn-sec-act" @click="forwardModal.running[rule.id] ? stopForwardRule(rule) : startForwardRule(rule)">{{ forwardModal.running[rule.id] ? '停止' : '启动' }}</button>
                 <button class="btn-cancel" @click="removeForwardRule(rule)">删除</button>
               </div>
-              <div v-if="forwardModal.errors[rule.id]" class="forward-error-line">
-                ⚠ {{ forwardModal.errors[rule.id] }}
-              </div>
+              <div v-if="forwardModal.errors[rule.id]" class="forward-error-line">⚠ {{ forwardModal.errors[rule.id] }}</div>
             </div>
           </div>
           <div class="modal-footer">

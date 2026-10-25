@@ -23,6 +23,8 @@
 | 20 | Raw TCP（裸 TCP 透传） | 新功能 | ✅ 已完成（2026-10-25） | 1 天 |
 | 21 | Rlogin（RFC 1282） | 新功能 | ✅ 已完成（2026-10-25） | 1 天 |
 | 22 | FTP（接入 SFTP 面板：列表/上传/下载/删除/重命名/新建目录） | 新功能 | ✅ 已完成（2026-10-25） | 3 天 |
+| 23 | 远程端口转发（-R） | 新功能 | ✅ 已完成（2026-10-25） | 1~2 天 |
+| 24 | SOCKS5 动态转发（-D） | 新功能 | ✅ 已完成（2026-10-25） | 1 天 |
 
 > 3~7 详见 [FEATURES-TERM-TYPE.md](./FEATURES-TERM-TYPE.md) 与 [FEATURES-SSH-CAPABILITIES.md](./FEATURES-SSH-CAPABILITIES.md)。
 

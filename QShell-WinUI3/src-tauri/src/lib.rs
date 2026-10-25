@@ -30,7 +30,11 @@ use sftp::{
     sftp_chmod, sftp_stat, sftp_upload_file, sftp_download_file,
     sftp_home_dir, cancel_sftp_transfer, sftp_sync_directory
 };
-use port_forward::{PortForwardManager, start_local_forward, stop_local_forward, list_running_forwards};
+use port_forward::{
+    PortForwardManager, start_local_forward, stop_local_forward, list_running_forwards,
+    RemoteForwardManager, start_remote_forward, stop_remote_forward, list_remote_forwards,
+    SocksForwardManager, start_socks_forward, stop_socks_forward, list_socks_forwards,
+};
 use monitor::fetch_system_metrics;
 use local_fs::{list_local_dir, local_roots, local_known_folders, local_path_exists, read_local_image_data_url, local_image_thumbnail};
 use keygen::{generate_ssh_key, inspect_ssh_key};
@@ -472,6 +476,8 @@ pub fn run() {
         .manage(SshManager::new())
         .manage(GenericStreamManager::new())
         .manage(PortForwardManager::new())
+        .manage(RemoteForwardManager::new())
+        .manage(SocksForwardManager::new())
         .manage(FtpManager::new())
         .setup(|app| {
             register_notification_app_id();
@@ -504,6 +510,12 @@ pub fn run() {
             resize_ssh_session,
             close_ssh_session,
             start_local_forward,
+            start_remote_forward,
+            stop_remote_forward,
+            list_remote_forwards,
+            start_socks_forward,
+            stop_socks_forward,
+            list_socks_forwards,
             stop_local_forward,
             list_running_forwards,
             load_hosts_config,
