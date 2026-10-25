@@ -6700,3 +6700,532 @@ body,
 .history-item:hover {
   background: rgba(255, 255, 255, 0.05);
 }
+/* 标签拖拽目标：改用内阴影 + 去掉上移，避免被 tab-list 的 overflow 裁切 */
+.term-tab.is-tab-drag-over {
+  border-color: var(--color-primary) !important;
+  box-shadow: inset 0 0 0 2px var(--color-primary) !important;
+  transform: none !important;
+}
+/* 告警面板页签与会话事件样式 */
+.alert-popover-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 6px;
+}
+
+.alert-tab-btn {
+  height: 26px;
+  padding: 0 12px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.alert-tab-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.alert-tab-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+
+.session-event-item {
+  cursor: pointer;
+}
+
+.session-event-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.session-event-dot.disconnected {
+  background: #f48771;
+}
+
+.session-event-dot.reconnected {
+  background: #4ade80;
+}
+
+.session-event-time {
+  flex: none;
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-sub);
+}
+
+.session-event-clear {
+  display: block;
+  margin: 10px auto 4px;
+}
+/* 标题栏内的小页签 */
+.alert-head-actions .alert-tab-btn {
+  height: 22px;
+  padding: 0 9px;
+  font-size: 11px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.alert-head-actions .alert-tab-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.alert-head-actions .alert-tab-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+
+.alert-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 旧的一整行页签容器不再使用 */
+.alert-popover-tabs {
+  display: none;
+}
+/* 手动断开事件用灰蓝色，不抢异常掉线的注意力 */
+.session-event-dot.manual {
+  background: #8aa4c8;
+}
+/* 工具栏图标统一悬停动画：图标轻微上浮放大 */
+.top-icon-btn .v-icon {
+  transition: transform 0.16s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.top-icon-btn:hover:not(:disabled) .v-icon {
+  transform: translateY(-1px) scale(1.1);
+}
+
+.top-icon-btn:active:not(:disabled) .v-icon {
+  transform: scale(0.94);
+}
+
+.top-icon-btn:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+/* 快速命令面板 */
+.quick-palette-handle {
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 72px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 40;
+}
+
+.qp-handle-bar {
+  width: 32px;
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.18);
+  transition: background 0.2s ease, width 0.2s ease;
+}
+
+.quick-palette-handle:hover .qp-handle-bar {
+  background: var(--color-primary);
+  width: 44px;
+}
+
+.quick-palette {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-modal);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.qp-list {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 6px;
+}
+
+.qp-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.qp-item.active {
+  background: rgba(120, 217, 236, 0.12);
+}
+
+.qp-label {
+  flex: 1;
+  min-width: 0;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qp-hl {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.qp-source {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-sub);
+}
+
+.qp-empty {
+  padding: 16px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+.qp-input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-card);
+  background: var(--bg-card);
+}
+
+.qp-prompt {
+  color: var(--color-primary);
+  font-size: 13px;
+}
+
+.qp-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text-main);
+  font-size: 13px;
+}
+
+.qp-hint {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-sub);
+}
+
+.palette-slide-enter-active,
+.palette-slide-leave-active {
+  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease;
+}
+
+.palette-slide-enter-from,
+.palette-slide-leave-to {
+  transform: translateY(16px);
+  opacity: 0;
+}
+/* 面板半透明 + 模糊，兼顾可读与能看见终端 */
+.quick-palette {
+  background: rgba(26, 30, 36, 0.72) !important;
+  backdrop-filter: blur(14px) saturate(1.1);
+  -webkit-backdrop-filter: blur(14px) saturate(1.1);
+  border-color: rgba(255, 255, 255, 0.10) !important;
+}
+
+.qp-item.active {
+  background: rgba(120, 217, 236, 0.16);
+}
+
+.qp-toggle-btn {
+  flex: none;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-sub);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.qp-toggle-btn.active {
+  background: var(--color-primary);
+  border-color: transparent;
+  color: var(--color-on-primary);
+}
+
+.qp-toggle-btn:hover:not(.active) {
+  color: var(--text-main);
+}
+/* 命令面板 dock：包裹手柄与面板，避免 hover 抖动 */
+.quick-palette-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 16px;
+  display: flex;
+  justify-content: center;
+  z-index: 40;
+}
+
+.quick-palette-handle {
+  position: static !important;
+  transform: none !important;
+  width: 72px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.quick-palette {
+  position: absolute !important;
+  left: 10px !important;
+  right: 10px !important;
+  bottom: 16px !important;
+  top: auto !important;
+}
+
+.qp-toggle-btn .v-icon {
+  vertical-align: -2px;
+}
+/* 终端为命令面板让出空间（通过 CSS 变量控制，避免模板字符串） */
+.terminal-mount-box {
+  height: calc(100% - var(--palette-reserve, 0px)) !important;
+}
+/* 命令面板展开时：终端让出固定空间（纯 CSS，无 JS 测量） */
+.terminal-viewport.palette-open .terminal-mount-box {
+  height: calc(100% - 330px) !important;
+}
+
+/* 命令面板固定高度，保证让位空间稳定 */
+.quick-palette {
+  height: 300px;
+  display: flex;
+  flex-direction: column;
+}
+
+.quick-palette .qp-list {
+  flex: 1;
+  max-height: none;
+  overflow-y: auto;
+}
+/* 终端让位高度与面板无缝衔接 */
+.terminal-viewport.palette-open .terminal-mount-box {
+  height: calc(100% - 316px) !important;
+}
+
+/* 面板与终端视觉融合：弱化顶部边框 */
+.quick-palette {
+  border-top-color: rgba(255, 255, 255, 0.06) !important;
+}
+/* 面板视觉与终端融合：底色接近终端背景，去掉突兀边框 */
+.quick-palette {
+  background: var(--term-bg-fallback, #1a1e24) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  border: none !important;
+  border-radius: 8px !important;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.35) !important;
+}
+
+.qp-input-row {
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+  background: transparent !important;
+}
+/* 底部触发区加大：鼠标移到终端最下方即展开 */
+.quick-palette-dock {
+  height: 52px !important;
+  align-items: flex-end;
+  padding-bottom: 6px;
+}
+/* ===== 命令面板改为布局元素，终端自动缩限/舒展 ===== */
+.terminal-viewport {
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.terminal-viewport.palette-open .terminal-mount-box {
+  height: 100% !important;
+}
+
+.quick-palette {
+  position: static !important;
+  left: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  flex: none;
+  width: 100%;
+  max-height: 340px;
+  margin: 0;
+  border: none !important;
+  border-radius: 8px 8px 0 0 !important;
+  background: var(--term-bg-fallback, #1a1e24) !important;
+  box-shadow: 0 -4px 18px rgba(0, 0, 0, 0.25) !important;
+}
+
+.quick-palette .qp-list {
+  max-height: 260px;
+  overflow-y: auto;
+}
+/* 面板配色：跟终端色调一致（深色主题） */
+.quick-palette {
+  background: #10141a !important;
+  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
+}
+
+[data-theme="light"] .quick-palette {
+  background: #f4f6f9 !important;
+  border-top: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+/* 触发区缩窄：只有胶囊手柄区域触发展开 */
+.quick-palette-dock {
+  position: absolute !important;
+  left: 50% !important;
+  right: auto !important;
+  bottom: 0 !important;
+  transform: translateX(-50%) !important;
+  width: 96px !important;
+  height: 24px !important;
+  padding-bottom: 2px;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  z-index: 40;
+}
+
+/* 面板配色贴合主题卡片色（去掉硬编码深色） */
+.quick-palette {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border-card) !important;
+  border-bottom: none !important;
+  border-radius: 8px 8px 0 0 !important;
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.18) !important;
+}
+/* 手柄：浅色主题下也能看见 */
+.qp-handle-bar {
+  background: rgba(0, 0, 0, 0.20);
+}
+
+[data-theme="light"] .qp-handle-bar {
+  background: rgba(0, 0, 0, 0.28);
+}
+
+/* 候选高亮：提高对比度 */
+.qp-item.active {
+  background: rgba(120, 217, 236, 0.16);
+}
+
+[data-theme="light"] .qp-item.active {
+  background: rgba(20, 110, 160, 0.14);
+}
+
+.qp-item:hover:not(.active) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="light"] .qp-item:hover:not(.active) {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* 面板动画更柔和 */
+.palette-slide-enter-active {
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.24s ease-out;
+}
+
+.palette-slide-leave-active {
+  transition: transform 0.26s cubic-bezier(0.4, 0, 1, 1), opacity 0.2s ease-in;
+}
+
+.palette-slide-enter-from,
+.palette-slide-leave-to {
+  transform: translateY(14px);
+  opacity: 0;
+}
+/* 面板展开/收起：高度过渡（参考右栏抽屉动画） */
+.quick-palette {
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transition: max-height 0.3s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.22s ease;
+}
+
+.quick-palette.is-open {
+  max-height: 340px;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* 面板内右键不弹终端菜单（已由 @contextmenu.prevent.stop 处理，这里兜底） */
+.quick-palette {
+  isolation: isolate;
+}
+/* 动画放慢一倍 */
+.quick-palette {
+  transition: max-height 0.6s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.45s ease !important;
+}
+
+/* 手柄颜色：深色主题用白，浅色主题用黑 */
+.qp-handle-bar {
+  background: rgba(255, 255, 255, 0.22) !important;
+}
+
+[data-theme="light"] .qp-handle-bar {
+  background: rgba(0, 0, 0, 0.28) !important;
+}
+/* 分开控制展开/收起速度 */
+.quick-palette {
+  /* 收起（基础态）：0.8s */
+  transition: max-height 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease !important;
+}
+
+.quick-palette.is-open {
+  /* 展开：0.95s，先快后慢更柔 */
+  transition: max-height 0.95s cubic-bezier(0.22, 1, 0.36, 1), opacity 0.75s ease !important;
+}
+/* 展开缓动改为 ease-out */
+.quick-palette.is-open {
+  transition: max-height 0.95s ease-out, opacity 0.75s ease-out !important;
+}
+/* 展开与收起完全一致：0.8s */
+.quick-palette.is-open {
+  transition: max-height 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease !important;
+}
