@@ -10,6 +10,17 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import Icons from "./components/Icons.vue";
+import TraceModal from "./components/TraceModal.vue";
+import { fuzzyMatchIndices } from "./utils/fuzzy";
+import { stripAnsiForCheck } from "./utils/ansi";
+import {
+  formatMetricBytes,
+  formatHistoryTime,
+  formatSessionEventTime,
+  formatSpeed,
+  formatAxisSpeed,
+} from "./utils/format";
+import { joinLocalPath } from "./utils/path";
 import CustomSelect from "./components/CustomSelect.vue";
 import ColorPicker from "./components/ColorPicker.vue";
 import CustomNumberStepper from "./components/CustomNumberStepper.vue";
@@ -399,7 +410,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.79");
+const appVersion = ref("0.99.80");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -681,11 +692,7 @@ function buildNetworkPolyline(key: "up" | "down"): string {
     .join(" ");
 }
 
-function formatAxisSpeed(value: number): string {
-  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)}M`;
-  if (value >= 1024) return `${(value / 1024).toFixed(0)}K`;
-  return `${Math.round(value)}B`;
-}
+
 let refreshMetricsNow: (() => void) | null = null;
 const availableNetInterfaces = computed(() =>
   monitorStats.value.net_if_options.filter((name) => name !== "lo")
@@ -858,15 +865,6 @@ let monitorInterval: number | null = null;
 // blocking 线程池逐步抽干，最终拖死 SFTP 传输与流量审计。
 let metricsPollInFlight = false;
 
-function formatMetricBytes(bytes: number): string {
-  if (!bytes || bytes <= 0) return "--";
-  const gb = bytes / (1024 ** 3);
-  if (gb >= 1) return `${gb.toFixed(1)} GB`;
-  const mb = bytes / (1024 ** 2);
-  // 小于 1MB 时按 KB 展示，否则 45KB 会被四舍五入成 "0 MB"。
-  if (mb >= 1) return `${mb.toFixed(0)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-}
 
 function resetMonitorStats() {
   refreshMetricsNow = null;
@@ -1035,13 +1033,6 @@ function clearSessionEvents() {
   sessionEvents.value = [];
 }
 
-function formatSessionEventTime(ts: number) {
-  const date = new Date(ts);
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  const ss = String(date.getSeconds()).padStart(2, "0");
-  return `${hh}:${mm}:${ss}`;
-}
 
 function focusSessionEvent(event: SessionEvent) {
   const tab = sessions.value.find(s => s.id === event.sessionId);
@@ -1642,39 +1633,6 @@ function cleanupTraceListeners() {
   traceUnlisteners = [];
 }
 
-function traceAvg(hop: TraceHop): number | null {
-  if (!hop.rtt_ms || hop.rtt_ms.length === 0) return null;
-  return hop.rtt_ms.reduce((a, b) => a + b, 0) / hop.rtt_ms.length;
-}
-
-function traceMaxRtt(): number {
-  let max = 0;
-  for (const hop of traceModal.value.hops) {
-    const avg = traceAvg(hop);
-    if (avg !== null && avg > max) max = avg;
-  }
-  return Math.max(max, 20);
-}
-
-function traceBarWidth(hop: TraceHop): number {
-  const avg = traceAvg(hop);
-  if (avg === null) return 0;
-  return Math.min(100, Math.max(8, (avg / traceMaxRtt()) * 100));
-}
-
-function traceBarClass(hop: TraceHop): string {
-  const avg = traceAvg(hop);
-  if (avg === null) return "is-timeout";
-  if (avg < 50) return "is-fast";
-  if (avg < 150) return "is-mid";
-  return "is-slow";
-}
-
-function traceRttText(hop: TraceHop): string {
-  if (!hop.rtt_ms || hop.rtt_ms.length === 0) return "*";
-  return hop.rtt_ms.map(v => `${v.toFixed(v < 10 ? 1 : 0)} ms`).join(" · ");
-}
-// --- 终端全屏 ---
 const terminalFullscreen = ref(false);
 let rightPanelWasOpen = false;
 
@@ -1713,6 +1671,7 @@ interface PaletteItem {
 
 const commandPalette = ref({ open: false, query: "", selected: 0 });
 const commandPalettePinned = ref(false);
+let paletteHoverCooldownUntil = 0;
 const paletteIncludeMemos = ref(false);
 
 const paletteAllItems = computed<PaletteItem[]>(() => {
@@ -1732,18 +1691,6 @@ const paletteAllItems = computed<PaletteItem[]>(() => {
   return items;
 });
 
-function fuzzyMatchIndices(text: string, query: string): number[] | null {
-  if (!query) return [];
-  const indices: number[] = [];
-  let cursor = 0;
-  for (const ch of query) {
-    const idx = text.indexOf(ch, cursor);
-    if (idx === -1) return null;
-    indices.push(idx);
-    cursor = idx + 1;
-  }
-  return indices;
-}
 
 const paletteFiltered = computed<PaletteItem[]>(() => {
   const q = commandPalette.value.query.trim().toLowerCase();
@@ -1826,6 +1773,8 @@ function closeCommandPaletteForce() {
 }
 
 function onPaletteDockEnter() {
+  // 收起后短时间内不响应悬停，避免指针停在胶囊上又立刻弹回
+  if (Date.now() < paletteHoverCooldownUntil) return;
   if (!commandPalette.value.open) {
     openCommandPalette();
   }
@@ -1834,6 +1783,7 @@ function onPaletteDockEnter() {
 function toggleCommandPalette() {
   if (commandPalette.value.open) {
     closeCommandPaletteForce();
+    paletteHoverCooldownUntil = Date.now() + 600;
   } else {
     openCommandPalette();
   }
@@ -5677,12 +5627,6 @@ interface HistoryEntry {
 
 const PASSWORD_PROMPT_PATTERN = /(password|passphrase|passcode|密码|口令)\s*[:：]?\s*$/i;
 
-function stripAnsiForCheck(text: string): string {
-  return text
-    .replace(/\x1b\][^\x07]*\x07/g, "")
-    .replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, "")
-    .replace(/\x1b[()][A-Z0-9]/g, "");
-}
 
 function isPasswordPromptPending(tab: SessionTab): boolean {
   const recent = stripAnsiForCheck(tab.recentOutput || "");
@@ -5808,14 +5752,7 @@ function clearCommandHistory() {
   }
 }
 
-function formatHistoryTime(ts: number) {
-  const date = new Date(ts);
-  const now = new Date();
-  const sameDay = date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  return sameDay ? `${hh}:${mm}` : `${date.getMonth() + 1}/${date.getDate()} ${hh}:${mm}`;
-}
+
 function switchRightPanelTab(tab: "sftp" | "memo" | "history") {
   rightPanelTab.value = tab;
   if (tab === "sftp" && activeSessionId.value) {
@@ -6348,24 +6285,7 @@ function confirmLocalDirPicker() {
   finishLocalFileBrowser(localPickerPath.value);
 }
 
-// 只允许"单个文件名"：去掉任何路径分隔符与非法字符，防止 ../ 或绝对路径逃逸出所选目录。
-const WINDOWS_RESERVED_NAME = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
-function sanitizeLocalFileName(raw: string): string {
-  const lastSegment = String(raw || "").split(/[/\\]/).pop() || "";
-  const stripped = lastSegment
-    .replace(/[<>:"|?*\u0000-\u001f]/g, "")
-    .replace(/[. ]+$/, "")
-    .trim();
-  if (!stripped || /^\.+$/.test(stripped)) return "";
-  if (WINDOWS_RESERVED_NAME.test(stripped)) return "";
-  return stripped;
-}
 
-function joinLocalPath(dir: string, name: string) {
-  const cleanName = sanitizeLocalFileName(name);
-  if (!cleanName) return "";
-  return /[\\/]$/.test(dir) ? `${dir}${cleanName}` : `${dir}\\${cleanName}`;
-}
 
 async function openLocalFileBrowser(options: {
   action: "open" | "save";
@@ -6856,11 +6776,6 @@ async function sftpDeleteItemsConfirmed(targets: SftpFileItem[]) {
   }
 }
 
-function formatSpeed(bps: number) {
-  if (bps < 1024) return `${bps} B/s`;
-  if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;
-}
 
 // --- 备忘录管理 ---
 function sendMemoCommand(cmd: string) {
@@ -10153,49 +10068,16 @@ onUnmounted(() => {
     </div>
     </Transition>
 
-    <!-- 路由追踪可视化弹窗 -->
-    <Transition name="modal-fade">
-      <div v-if="traceModal.show" class="modal-overlay" @mousedown.self="traceModal.show = false">
-        <div class="modal-card trace-modal">
-          <div class="modal-header">
-            <span class="modal-title">路由追踪 · {{ traceModal.title }}</span>
-            <span class="modal-close" @click="traceModal.show = false">✕</span>
-          </div>
-          <div class="trace-body">
-            <div class="trace-target-row">
-              <span class="trace-target-label">目标</span>
-              <span class="trace-target-ip">{{ traceModal.host }}</span>
-            </div>
-            <div v-if="traceModal.error" class="trace-error">{{ traceModal.error }}</div>
-            <template v-else>
-              <div v-if="traceModal.hops.length > 0" class="trace-list">
-                <div v-for="hop in traceModal.hops" :key="hop.hop" class="trace-hop" :class="{ 'is-timeout': hop.timeout && !hop.ip }">
-                  <span class="trace-hop-index">{{ hop.hop }}</span>
-                  <div class="trace-hop-main">
-                    <div class="trace-hop-ip-row">
-                      <span class="trace-hop-ip" :title="hop.ip || '请求超时'">{{ hop.ip || '请求超时' }}</span>
-                      <span v-if="hop.location" class="trace-hop-location">{{ hop.location }}</span>
-                    </div>
-                    <div class="trace-bar-track">
-                      <div class="trace-bar" :class="traceBarClass(hop)" :style="{ width: traceBarWidth(hop) + '%' }"></div>
-                    </div>
-                  </div>
-                  <span class="trace-hop-rtt">{{ traceRttText(hop) }}</span>
-                </div>
-              </div>
-              <div v-if="traceModal.loading" class="trace-loading">
-                <span class="trace-spinner"></span>
-                <span>正在追踪路由...（已发现 {{ traceModal.hops.length }} 跳）</span>
-              </div>
-              <div v-else-if="traceModal.hops.length === 0" class="trace-loading">未发现任何路由节点</div>
-            </template>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-confirm" @click="traceModal.show = false">关闭</button>
-          </div>
-        </div>
-      </div>
-    </Transition>
+    <TraceModal
+      :show="traceModal.show"
+      :title="traceModal.title"
+      :host="traceModal.host"
+      :loading="traceModal.loading"
+      :error="traceModal.error"
+      :hops="traceModal.hops"
+      @close="traceModal.show = false"
+    />
+
     <!-- 弹窗 7.5：全局界面字体更换选择弹窗 (FontSelectorModal) -->
     <Transition name="modal-fade">
     <div v-if="showFontSelectorModal" class="modal-overlay" @mousedown.self="showFontSelectorModal = false">
