@@ -640,9 +640,12 @@ function loadSavedPaneLayout(): 1 | 2 | 3 | 4 {
 }
 const paneLayout = ref<1 | 2 | 3 | 4>(loadSavedPaneLayout());
 const paneSessions = ref<Record<string, string>>({ p1: "", p2: "", p3: "", p4: "" });
-const paneKeys = computed<string[]>(() =>
-  paneLayout.value === 1 ? ["p1"] : paneLayout.value === 2 ? ["p1", "p2"] : ["p1", "p2", "p3", "p4"]
-);
+const paneKeys = computed<string[]>(() => {
+  if (paneLayout.value === 1) return ["p1"];
+  if (paneLayout.value === 2) return ["p1", "p2"];
+  if (paneLayout.value === 3) return ["p1", "p2", "p3"];
+  return ["p1", "p2", "p3", "p4"];
+});
 
 const showPaneMenu = ref(false);
 
