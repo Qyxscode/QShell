@@ -11,6 +11,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import Icons from "./components/Icons.vue";
 import TraceModal from "./components/TraceModal.vue";
+import ForwardModal, { type ForwardRule } from "./components/ForwardModal.vue";
+import FontSelectorModal from "./components/FontSelectorModal.vue";
+import { protocolOptions, termTypeOptions, serialBaudRateOptions, presetUiFonts } from "./options";
 import { THEME_PRESETS, findThemePreset, themeVariant } from "./themes";
 import { fuzzyMatchIndices } from "./utils/fuzzy";
 import { stripAnsiForCheck } from "./utils/ansi";
@@ -450,7 +453,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.82");
+const appVersion = ref("0.99.83");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -624,6 +627,197 @@ interface SessionTab {
   closingByUser?: boolean;
   paletteAnimating?: boolean;
   recentOutput?: string;
+}
+
+// --- 分屏：窗格槽位模型（1 / 2 / 4 格，每格可空）---
+function loadSavedPaneLayout(): 1 | 2 | 3 | 4 {
+  try {
+    const raw = localStorage.getItem("qshell_pane_layout");
+    const n = Number(raw);
+    if (n === 1 || n === 2 || n === 3 || n === 4) return n as 1 | 2 | 3 | 4;
+  } catch {}
+  return 1;
+}
+const paneLayout = ref<1 | 2 | 3 | 4>(loadSavedPaneLayout());
+const paneSessions = ref<Record<string, string>>({ p1: "", p2: "", p3: "", p4: "" });
+const paneKeys = computed<string[]>(() =>
+  paneLayout.value === 1 ? ["p1"] : paneLayout.value === 2 ? ["p1", "p2"] : ["p1", "p2", "p3", "p4"]
+);
+
+const showPaneMenu = ref(false);
+
+function setPaneLayout(n: 1 | 2 | 3 | 4) {
+  paneLayout.value = n;
+  showPaneMenu.value = false;
+  const validKeys = paneKeys.value;
+
+  // 1. 超出新布局范围的槽位：清空并把会话收进待分配池
+  const pending: string[] = [];
+  for (const key of ["p1", "p2", "p3", "p4"]) {
+    if (!validKeys.includes(key) && paneSessions.value[key]) {
+      pending.push(paneSessions.value[key]);
+      paneSessions.value[key] = "";
+    }
+  }
+
+  // 2. 合法槽位中已有会话视为已占用
+  const used = new Set<string>();
+  for (const key of validKeys) {
+    const sid = paneSessions.value[key];
+    if (sid) used.add(sid);
+  }
+
+  // 3. 活动会话优先，其次按打开顺序，最后是被清出来的会话，依次填满空槽
+  const ordered = [activeSessionId.value, ...sessions.value.map(s => s.id), ...pending].filter(Boolean);
+  const seen = new Set<string>();
+  for (const sid of ordered) {
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    if (used.has(sid)) continue;
+    const empty = validKeys.find(k => !paneSessions.value[k]);
+    if (!empty) break;
+    paneSessions.value[empty] = sid;
+    used.add(sid);
+  }
+  try {
+    localStorage.setItem("qshell_pane_layout", String(n));
+  } catch {}
+  // 切换布局后：清掉动画冻结，多帧适配并通知远端新尺寸（否则旧终端会缩进/截断）
+  sessions.value.forEach(s => { s.paletteAnimating = false; });
+  const refitAll = () => {
+    sessions.value.forEach(s => {
+      if (!s.termInstance || !s.fitInstance) return;
+      try {
+        s.fitInstance.fit();
+      } catch {}
+      sendTerminalResize(s, s.termInstance.cols, s.termInstance.rows);
+    });
+  };
+  nextTick(() => {
+    refitAll();
+    requestAnimationFrame(() => {
+      refitAll();
+      window.setTimeout(refitAll, 80);
+    });
+  });
+}
+
+
+function assignPaneToSession(sid: string) {
+  // 单格布局不分配槽位，跟随活动会话显示
+  if (paneLayout.value === 1) return "";
+  for (const key of paneKeys.value) {
+    if (!paneSessions.value[key]) {
+      paneSessions.value[key] = sid;
+      return key;
+    }
+  }
+  return "";
+}
+
+function clearPaneOfSession(sid: string) {
+  for (const key of Object.keys(paneSessions.value)) {
+    if (paneSessions.value[key] === sid) paneSessions.value[key] = "";
+  }
+}
+
+function onPaneClick(sid: string) {
+  if (!sid) return;
+  if (activeSessionId.value === sid) {
+    const same = sessions.value.find(s => s.id === sid);
+    same?.termInstance?.focus();
+    return;
+  }
+  // 复用 switchSession：同步切监控、SFTP、fit 与刷新
+  switchSession(sid);
+}
+
+function paneKeyOfSession(sid: string): string | null {
+  if (!sid) return null;
+  if (paneLayout.value === 1) return sid === activeSessionId.value ? "p1" : null;
+  for (const k of paneKeys.value) {
+    if (paneSessions.value[k] === sid) return k;
+  }
+  return null;
+}
+
+
+/** 按布局返回 CSS Grid 区域（浏览器负责算尺寸，避免百分比定位误差） */
+function paneGridArea(pkey: string): string {
+  if (paneLayout.value === 1) return "1 / 1 / 2 / 2";
+  if (paneLayout.value === 2) {
+    return pkey === "p1" ? "1 / 1 / 2 / 2" : "1 / 2 / 2 / 3";
+  }
+  if (paneLayout.value === 3) {
+    if (pkey === "p1") return "1 / 1 / 3 / 2";
+    return pkey === "p2" ? "1 / 2 / 2 / 3" : "2 / 2 / 3 / 3";
+  }
+  const map: Record<string, string> = {
+    p1: "1 / 1 / 2 / 2",
+    p2: "1 / 2 / 2 / 3",
+    p3: "2 / 1 / 3 / 2",
+    p4: "2 / 2 / 3 / 3",
+  };
+  return map[pkey] || "1 / 1 / 2 / 2";
+}
+
+function paneAreaStyle(pkey: string): Record<string, string> {
+  return { gridArea: paneGridArea(pkey) };
+}
+
+function paneBoxStyle(sid: string): Record<string, string> {
+  const pkey = paneKeyOfSession(sid);
+  if (!pkey) return {};
+  return { gridArea: paneGridArea(pkey) };
+}
+
+function paneSlotFilled(pkey: string): boolean {
+  if (paneLayout.value === 1) return !!activeSessionId.value;
+  return !!paneSessions.value[pkey];
+}
+/** 窗格指示色：蓝 / 紫 / 青 / 粉，避开延迟指示器的绿黄橙红 */
+const PANE_COLORS: Record<string, string> = {
+  p1: "#6cb6ff",
+  p2: "#b48cff",
+  p3: "#4fd1c5",
+  p4: "#f472b6",
+};
+
+function activePaneColor(): string {
+  const sid = activeSessionId.value;
+  if (!sid) return "#8a8a94";
+  const tab = sessions.value.find(s => s.id === sid);
+  if (!tab?.alive) return "#8a8a94";
+  if (paneLayout.value === 1) return PANE_COLORS.p1;
+  const pkey = paneKeyOfSession(sid);
+  return pkey ? PANE_COLORS[pkey] || "#8a8a94" : "#8a8a94";
+}
+
+function activePaneLabel(): string {
+  if (paneLayout.value === 1) return "";
+  const pkey = paneKeyOfSession(activeSessionId.value);
+  if (!pkey) return "";
+  return `第 ${paneKeys.value.indexOf(pkey) + 1} 屏`;
+}
+function paneLatencyTextById(sid: string) {
+  const tab = sessions.value.find(s => s.id === sid);
+  if (!tab) return "--";
+  if (!tab.alive) return "离线";
+  return tab.latency ? `${tab.latency} ms` : "...";
+}
+
+function disconnectSessionById(sid: string) {
+  const tab = sessions.value.find(s => s.id === sid);
+  if (tab) void closeSession(tab);
+}
+
+function pickSessionForPane(pkey: string) {
+  const used = new Set(Object.values(paneSessions.value).filter(Boolean));
+  const candidate = sessions.value.find(s => !used.has(s.id));
+  if (!candidate) return;
+  paneSessions.value[pkey] = candidate.id;
+  activeSessionId.value = candidate.id;
+  nextTick(() => candidate.fitInstance?.fit());
 }
 
 const sessions = ref<SessionTab[]>([]);
@@ -1139,6 +1333,11 @@ function handleGlobalClick(e: MouseEvent) {
     }
   }
 
+
+  // 点击分屏布局菜单外部时收起
+  if (showPaneMenu.value && !target.closest(".pane-menu-wrap")) {
+    showPaneMenu.value = false;
+  }
   // 点击非通知气泡及非通知按钮区域时，自动收起通知气泡
   if (showAlertPopover.value) {
     if (!target.closest(".alert-popover") && !target.closest(".btn-toggle-alert")) {
@@ -1146,13 +1345,6 @@ function handleGlobalClick(e: MouseEvent) {
     }
   }
 
-  // 点击命令面板外部时收起（钉住除外）
-  if (commandPalette.value.open && !commandPalettePinned.value) {
-    // 面板和触发区内部点击都不算"点击外部"
-    if (!target.closest(".quick-palette-dock") && !target.closest(".quick-palette")) {
-      commandPalette.value.open = false;
-    }
-  }
   // 点击非传输气泡及非传输按钮区域时，自动收起传输气泡
   if (showTransferMonitor.value) {
     if (!target.closest(".transfer-monitor-popover:not(.alert-popover)") && !target.closest(".btn-toggle-transfer")) {
@@ -1710,8 +1902,6 @@ interface PaletteItem {
 }
 
 const commandPalette = ref({ open: false, query: "", selected: 0 });
-const commandPalettePinned = ref(false);
-let paletteHoverCooldownUntil = 0;
 const paletteIncludeMemos = ref(false);
 
 const paletteAllItems = computed<PaletteItem[]>(() => {
@@ -1770,15 +1960,34 @@ function paletteHighlight(label: string): Array<{ text: string; hl: boolean }> {
   return parts;
 }
 
-// 命令面板开合：动画期间冻结终端重排，动画结束后一次性适配
-watch(() => commandPalette.value.open, async () => {
-  const tab = activeSession.value;
-  if (tab) tab.paletteAnimating = true;
+// 当前可见的窗格会话（单格=活动会话，分屏=各窗格会话）
+function visiblePaneSessionIds(): string[] {
+  if (paneLayout.value === 1) return activeSessionId.value ? [activeSessionId.value] : [];
+  const ids: string[] = [];
+  for (const key of paneKeys.value) {
+    const sid = paneSessions.value[key];
+    if (sid) ids.push(sid);
+  }
+  return ids;
+}
+
+// 命令面板开合：动画期间冻结所有可见窗格的重排，动画结束后统一适配
+watch(() => commandPalette.value.open, () => {
+  const ids = visiblePaneSessionIds();
+  ids.forEach(sid => {
+    const t = sessions.value.find(s => s.id === sid);
+    if (t) t.paletteAnimating = true;
+  });
   window.setTimeout(() => {
-    if (tab) {
-      tab.paletteAnimating = false;
-      tab.fitInstance?.fit();
-    }
+    ids.forEach(sid => {
+      const t = sessions.value.find(s => s.id === sid);
+      if (!t) return;
+      t.paletteAnimating = false;
+      t.fitInstance?.fit();
+      if (t.termInstance) {
+        sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
+      }
+    });
   }, 850);
 });
 function movePaletteSelection(delta: number) {
@@ -1797,40 +2006,22 @@ function runPaletteSelected() {
   // 没有候选时，直接把输入框内容当作命令发送
   const query = commandPalette.value.query.trim();
   if (!query) return;
-  closeCommandPalette();
   commandPalette.value.query = "";
   commandPalette.value.selected = 0;
   sendHistoryCommand(query);
 }
 
-function closeCommandPalette() {
-  if (commandPalettePinned.value) return;
-  commandPalette.value.open = false;
-}
 
 function closeCommandPaletteForce() {
   commandPalette.value.open = false;
 }
 
-function onPaletteDockEnter() {
-  // 收起后短时间内不响应悬停，避免指针停在胶囊上又立刻弹回
-  if (Date.now() < paletteHoverCooldownUntil) return;
-  if (!commandPalette.value.open) {
-    openCommandPalette();
-  }
-}
-
 function toggleCommandPalette() {
   if (commandPalette.value.open) {
     closeCommandPaletteForce();
-    paletteHoverCooldownUntil = Date.now() + 600;
   } else {
     openCommandPalette();
   }
-}
-
-function togglePalettePin() {
-  commandPalettePinned.value = !commandPalettePinned.value;
 }
 
 function confirmClearPaletteHistory() {
@@ -1860,7 +2051,6 @@ function openCommandPalette() {
 }
 
 function runPaletteItem(item: PaletteItem) {
-  closeCommandPalette();
   commandPalette.value.query = "";
   commandPalette.value.selected = 0;
   sendHistoryCommand(item.cmd);
@@ -2088,18 +2278,6 @@ const showFontSelectorModal = ref(false);
 const includeSystemFonts = ref(false);
 const systemFontList = ref<string[]>([]);
 const isReadingSystemFonts = ref(false);
-const presetUiFonts = [
-  { name: "系统推荐默认", value: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif' },
-  { name: "微软雅黑 (Microsoft YaHei)", value: '"Microsoft YaHei", sans-serif' },
-  { name: "苹方 / 华文细黑 (PingFang SC)", value: '"PingFang SC", "Heiti SC", sans-serif' },
-  { name: "Segoe UI", value: '"Segoe UI", sans-serif' },
-  { name: "鸿蒙字体 (HarmonyOS Sans SC)", value: '"HarmonyOS Sans SC", "Microsoft YaHei", sans-serif' },
-  { name: "OPPO Sans", value: '"OPPO Sans", "Microsoft YaHei", sans-serif' },
-  { name: "MiSans (小米兰亭)", value: '"MiSans", "Microsoft YaHei", sans-serif' },
-  { name: "思源黑体 (Source Han Sans SC)", value: '"Source Han Sans SC", "Noto Sans SC", sans-serif' },
-  { name: "宋体 / 明朝 (SimSun)", value: 'SimSun, "Songti SC", serif' },
-  { name: "楷体 (KaiTi)", value: 'KaiTi, "Kaiti SC", serif' },
-];
 
 function getDisplayFontName(fontStr: string) {
   if (!fontStr || fontStr.includes("-apple-system") || fontStr === defaultGlobalFont) {
@@ -2187,37 +2365,9 @@ const importSelectModal = ref({
 
 // --- 主机管理操作 ---
 // --- 连接协议与串口管理 ---
-const protocolOptions = [
-  { label: "SSH (默认网络终端)", value: "ssh" },
-  { label: "Telnet (网络终端)", value: "telnet" },
-  { label: "Rlogin (传统 Unix 登录)", value: "rlogin" },
-  { label: "Raw TCP (裸 TCP 透传)", value: "raw" },
-  { label: "FTP (文件传输)", value: "ftp" },
-  { label: "Serial (串口硬件终端)", value: "serial" },
-  { label: "Local (本地 PowerShell / CMD)", value: "local" },
-];
 
 // 终端类型：auto 时 SSH 会探测服务器上可用的 terminfo，Telnet 回退 xterm-256color。
-const termTypeOptions = [
-  { label: "自动（推荐）", value: "auto" },
-  { label: "xterm-256color", value: "xterm-256color" },
-  { label: "xterm", value: "xterm" },
-  { label: "vt220", value: "vt220" },
-  { label: "vt100", value: "vt100" },
-  { label: "linux", value: "linux" },
-  { label: "ansi", value: "ansi" },
-];
 
-const serialBaudRateOptions = [
-  { label: "9600 (标准)", value: 9600 },
-  { label: "19200", value: 19200 },
-  { label: "38400", value: 38400 },
-  { label: "57600", value: 57600 },
-  { label: "115200 (高速常用)", value: 115200 },
-  { label: "230400", value: 230400 },
-  { label: "460800", value: 460800 },
-  { label: "921600", value: 921600 },
-];
 
 const availableSerialPorts = ref<string[]>([]);
 const isScanningPorts = ref(false);
@@ -4186,17 +4336,6 @@ async function submitUnlock(password: string) {
 }
 
 // --- 端口转发（本地转发）---
-interface ForwardRule {
-  id: string;
-  type: "local" | "remote" | "socks";
-  localPort: number;
-  remoteHost: string;
-  remotePort: number;
-  bindPort: number;
-  targetHost: string;
-  targetPort: number;
-}
-
 const forwardModal = ref({
   show: false,
   hostKey: "",
@@ -4933,6 +5072,7 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     is_connecting: true,
   });
   sessions.value.push(newTab);
+  assignPaneToSession(newTab.id);
   activeSessionId.value = sid;
   clearSftpState();
   resetNetworkHistory();
@@ -5132,7 +5272,6 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
       newTab.alive = false;
       newTab.is_connecting = false;
       newTab.latency = 0;
-      sessionMonitorStats.delete(sid);
 
       // 断开后必须立刻冻结该会话的监控和 SFTP 视图，避免继续展示远端状态。
       if (activeSessionId.value === sid) {
@@ -5196,6 +5335,7 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
 
     let resizeTimer: number | null = null;
     const resizeObserver = new ResizeObserver(() => {
+      if (newTab.paletteAnimating) return;
       if (term.element) {
         if (resizeTimer) clearTimeout(resizeTimer);
         resizeTimer = window.setTimeout(() => {
@@ -5450,7 +5590,6 @@ let latencyInterval: number | null = null;
 
 // 独立即时测速函数：连上或切到终端时毫秒级触发，不被任何耗时的系统指标采集阻塞
 async function probeSessionLatency(sid: string) {
-  if (activeSessionId.value !== sid) return;
   const currentTab = sessions.value.find(s => s.id === sid);
   if (!currentTab?.alive || !currentTab?.host?.host) return;
   try {
@@ -5501,9 +5640,18 @@ function startMonitoringLoop(sid: string) {
 
   // 1. 终端连上后【立刻】执行首次测速
   probeSessionLatency(sid);
-  // 保持 3 秒一次心跳测速
+  // 保持 3 秒一次心跳测速（所有窗格内会话各自独立探测）
   latencyInterval = window.setInterval(() => {
-    probeSessionLatency(sid);
+    const ids = new Set<string>();
+    if (paneLayout.value === 1) {
+      if (activeSessionId.value) ids.add(activeSessionId.value);
+    } else {
+      for (const key of paneKeys.value) {
+        const paneSid = paneSessions.value[key];
+        if (paneSid) ids.add(paneSid);
+      }
+    }
+    ids.forEach(id => { void probeSessionLatency(id); });
   }, 3000);
 
   // 2. 独立的系统指标采集轮询 (3秒心跳)
@@ -5598,6 +5746,10 @@ function switchSession(sid: string) {
         disk_total_bytes: 0,
         disk_used_bytes: 0,
       };
+  // 切换后立即用该会话已缓存的延迟刷新大指示器，不等下一轮探测
+  const liveLatency = cur?.latency && cur.latency > 0 ? cur.latency : 0;
+  monitorStats.value.latency = liveLatency;
+
   startMonitoringLoop(sid);
 
   // 解决切换标签页吞字/重叠：等 DOM 切换显示并完成几何计算后执行多帧适配与刷新
@@ -5624,6 +5776,7 @@ function switchSession(sid: string) {
 
 function closeSession(tab: SessionTab) {
   if (tab.is_locked) return; // 锁定状态禁止关闭
+  clearPaneOfSession(tab.id);
   tab.closingByUser = true;
   tab.intentionalExit = true;
   cancelAutoReconnect(tab);
@@ -5654,6 +5807,7 @@ function closeSession(tab: SessionTab) {
     clearSftpState();
     startMonitoringLoop(nextTab.id);
   }
+
 }
 
 const sftpErrorMsg = ref("");
@@ -7534,6 +7688,28 @@ onUnmounted(() => {
           <Icons name="fullscreen" size="20" />
         </button>
 
+        <div class="pane-menu-wrap">
+          <button
+            :class="['top-icon-btn', paneLayout > 1 ? 'active' : '']"
+            @click="showPaneMenu = !showPaneMenu"
+            :title="'分屏布局（当前 ' + paneLayout + ' 屏）'"
+          >
+            <Icons name="split" size="19" />
+            <span class="split-count">{{ paneLayout }}</span>
+          </button>
+          <div v-if="showPaneMenu" class="pane-menu">
+            <button
+              v-for="n in [1, 2, 3, 4]"
+              :key="n"
+              :class="['pane-menu-item', paneLayout === n ? 'active' : '']"
+              @click="setPaneLayout(n)"
+            >
+              <span class="pane-menu-icon" :class="'layout-icon-' + n"></span>
+              <span>{{ n }} 屏</span>
+            </button>
+          </div>
+        </div>
+
         <button 
           :class="['top-icon-btn', showTerminalSettingsModal ? 'active' : '']"
           @click="showTerminalSettingsModal = true"
@@ -7898,19 +8074,6 @@ onUnmounted(() => {
           >
             <!-- 快速命令面板：底部手柄 + 向上展开的命令搜索 -->
           <div class="terminal-stage">
-            <div
-              v-if="sessions.length > 0"
-              class="quick-palette-dock"
-              @mouseenter="onPaletteDockEnter"
-            >
-              <div
-                class="quick-palette-handle"
-                title="快速命令 (Ctrl+K) · 悬停展开"
-                @click="toggleCommandPalette"
-              >
-                <span class="qp-handle-bar"></span>
-              </div>
-            </div>
         <div v-if="activeSession?.read_only" class="terminal-readonly-badge">只读模式</div>
             <div v-if="terminalSearch.show" class="terminal-search-bar">
               <input
@@ -7935,38 +8098,53 @@ onUnmounted(() => {
               <button class="terminal-search-btn" title="下一个" @click="runTerminalSearch(true)">↓</button>
               <button class="terminal-search-btn" title="关闭（Esc）" @click="closeTerminalSearch">✕</button>
             </div>
-            <div v-if="sessions.length === 0" class="empty-state">
-              <div class="empty-icon-wrap">
-                <svg class="empty-desktop-icon" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <!-- 显示器外框 -->
-                  <rect x="6" y="8" width="52" height="36" rx="5" class="svg-stroke" stroke-width="2.5" />
-                  <!-- 屏幕内显示区 -->
-                  <rect x="10" y="12" width="44" height="28" rx="2.5" class="svg-screen" />
-                  <!-- 终端指示符 >_ -->
-                  <path d="M16 21L21 26L16 31" class="svg-symbol" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                  <line x1="25" y1="31" x2="33" y2="31" class="svg-symbol" stroke-width="2" stroke-linecap="round" />
-                  <!-- 支架立柱 -->
-                  <path d="M27 44V51C27 51.5 27.5 52 28 52H36C36.5 52 37 51.5 37 51V44" class="svg-stroke" stroke-width="2.5" stroke-linejoin="round" />
-                  <!-- 底座 -->
-                  <path d="M19 56H45" class="svg-stroke" stroke-width="2.5" stroke-linecap="round" />
-                </svg>
-              </div>
-              <div class="empty-title">终端空闲</div>
-              <div class="empty-hint">双击左侧设备列表以连接</div>
-            </div>
 
-            <div 
-              v-for="tab in sessions" 
-              :key="tab.id"
-              :id="'term-' + tab.id"
-              :class="['terminal-mount-box', { 'is-active': activeSessionId === tab.id }]"
-            ></div>
+            <div class="terminal-panes-container">
+            <div class="pane-grid" :class="'layout-' + paneLayout">
+              <div
+                v-for="tab in sessions"
+                :key="tab.id"
+                :id="'term-' + tab.id"
+                :class="['terminal-mount-box', 'pane-slot-box', { 'pane-hidden': !paneKeyOfSession(tab.id) }]"
+                :style="paneBoxStyle(tab.id)"
+                @mousedown="onPaneClick(tab.id)"
+              ></div>
+              <div
+                v-for="tab in sessions"
+                :key="'status-' + tab.id"
+                v-show="paneKeyOfSession(tab.id)"
+                class="pane-status-overlay"
+                :style="paneBoxStyle(tab.id)"
+              >
+                <span class="pane-latency">{{ paneLatencyTextById(tab.id) }}</span>
+                <button class="pane-disconnect" @click.stop="disconnectSessionById(tab.id)">断开</button>
+              </div>
+              <div
+                v-for="pkey in paneKeys"
+                v-show="!paneSlotFilled(pkey)"
+                :key="'empty-' + pkey"
+                class="pane-empty-overlay"
+                :style="paneAreaStyle(pkey)"
+              >
+                <div v-if="paneLayout === 1" class="pane-empty-static">
+                  <div class="pane-empty-title">终端空闲</div>
+                  <div class="pane-empty-hint">双击左侧设备列表以连接</div>
+                </div>
+                <div v-else class="pane-empty" @click="pickSessionForPane(pkey)">点击选择会话</div>
+              </div>
+            </div>
+            </div>
           </div>
           <div
             :class="['quick-palette', commandPalette.open ? 'is-open' : '']"
             @keydown="onPaletteKeydown"
             @contextmenu.prevent.stop
           >
+                <div class="qp-target-line">
+                  <span>发送到</span>
+                  <b>{{ activeSession?.name || "当前会话" }}</b>
+                  <span v-if="paneLayout > 1" class="qp-target-split">（{{ paneLayout }} 屏）</span>
+                </div>
                 <div class="qp-list">
                   <div
                     v-for="(item, idx) in paletteFiltered"
@@ -8000,18 +8178,30 @@ onUnmounted(() => {
                   title="显示/隐藏备忘录命令"
                 >备忘录</button>
                 <button
-                  :class="['qp-toggle-btn', commandPalettePinned ? 'active' : '']"
-                  @click="togglePalettePin"
-                  title="钉住面板（不自动收起）"
-                ><Icons name="pin" size="13" /></button>
-                <button
                   class="qp-toggle-btn"
                   @click="confirmClearPaletteHistory"
                   title="清空命令历史"
                 >清空历史</button>
+                <button
+                  class="qp-toggle-btn qp-close-btn"
+                  title="关闭面板（Esc）"
+                  @click="closeCommandPaletteForce"
+                >✕</button>
               </div>
             </div>
           </div>
+  <div class="terminal-status-bar">
+  <span class="status-session">
+  <i class="status-dot" :style="{ background: activePaneColor() }"></i>
+  {{ activeSession?.name || "未连接会话" }}
+  </span>
+  <span v-if="paneLayout > 1" class="status-pane-tag">{{ paneLayout }} 屏</span>
+  <span v-if="activePaneLabel()" class="status-pane-name">{{ activePaneLabel() }}</span>
+  <span class="status-spacer"></span>
+  <button class="status-cmd-btn" @click="toggleCommandPalette" title="命令面板 (Ctrl+K)">
+  ⌘ 命令面板
+  </button>
+  </div>
         </main>
 
         <!-- 右侧拖拽分割调节手柄 -->
@@ -8067,6 +8257,11 @@ onUnmounted(() => {
           <!-- SFTP 视图 (1:1 复刻原版 ssh8.py 设计) -->
           <div v-if="rightPanelTab === 'sftp'" class="sftp-container" @contextmenu.prevent="openContextMenu($event, 'sftp_bg')">
             <!-- 顶部快捷路径导航栏 -->
+            <!-- 当前 SFTP 所属终端 -->
+            <div class="sftp-session-indicator">
+              <i class="status-dot" :style="{ background: activePaneColor() }"></i>
+              <span class="sftp-session-name">{{ activeSession?.name || "未连接会话" }}</span>
+            </div>
             <div class="sftp-nav-bar">
               <button class="btn-sftp-action" :disabled="!canUseSftp" @click="sftpNavigateParent" title="返回上一级">上一级</button>
               <input class="sftp-path-box" :disabled="!canUseSftp" v-model="currentSftpPath" @keyup.enter="canUseSftp && fetchSftpFiles(currentSftpPath)" />
@@ -9676,78 +9871,14 @@ onUnmounted(() => {
     </Transition>
 
     <!-- 端口转发（本地转发） -->
-    <Transition name="modal-fade">
-      <div v-if="forwardModal.show" class="modal-overlay" @mousedown.self="forwardModal.show = false">
-        <div class="modal-card forward-modal">
-          <div class="modal-header">
-            <span class="modal-title">端口转发</span>
-            <span class="modal-close" @click="forwardModal.show = false">✕</span>
-          </div>
-          <div class="modal-body">
-            <div class="forward-type-switch">
-              <button :class="['forward-type-btn', forwardModal.draft.type === 'local' ? 'active' : '']" @click="forwardModal.draft.type = 'local'">本地转发 (-L)</button>
-              <button :class="['forward-type-btn', forwardModal.draft.type === 'remote' ? 'active' : '']" @click="forwardModal.draft.type = 'remote'">远程转发 (-R)</button>
-              <button :class="['forward-type-btn', forwardModal.draft.type === 'socks' ? 'active' : '']" @click="forwardModal.draft.type = 'socks'">SOCKS5 (-D)</button>
-            </div>
-
-            <p v-if="forwardModal.draft.type === 'local'" class="confirm-modal-text">
-              浏览器访问 <b>127.0.0.1:{{ forwardModal.draft.localPort || "本机端口" }}</b>
-              → 实际连接到服务器上的
-              <b>{{ forwardModal.draft.remoteHost || "目标地址" }}:{{ forwardModal.draft.remotePort || "目标端口" }}</b>
-            </p>
-            <p v-else-if="forwardModal.draft.type === 'remote'" class="confirm-modal-text">
-              服务器监听 <b>:{{ forwardModal.draft.bindPort || "远端端口" }}</b>
-              → 转发到本机的
-              <b>{{ forwardModal.draft.targetHost || "本地地址" }}:{{ forwardModal.draft.targetPort || "本地端口" }}</b>
-            </p>
-            <p v-else class="confirm-modal-text">
-              浏览器配置 SOCKS5 代理 <b>127.0.0.1:{{ forwardModal.draft.socksPort || "1080" }}</b>
-              → 所有流量经服务器代理转发
-            </p>
-
-            <div v-if="forwardModal.draft.type === 'local'" class="forward-draft-row">
-              <input v-model.number="forwardModal.draft.localPort" type="number" class="modal-input" placeholder="本机端口（浏览器访问）" style="width: 150px;" />
-              <span class="forward-arrow">→</span>
-              <input v-model="forwardModal.draft.remoteHost" class="modal-input" placeholder="目标地址（服务器上的）" style="flex: 1;" />
-              <input v-model.number="forwardModal.draft.remotePort" type="number" class="modal-input" placeholder="目标端口" style="width: 100px;" />
-              <button class="btn-sec-act" @click="addForwardRule">添加</button>
-            </div>
-            <div v-else-if="forwardModal.draft.type === 'remote'" class="forward-draft-row">
-              <input v-model.number="forwardModal.draft.bindPort" type="number" class="modal-input" placeholder="远端监听端口" style="width: 130px;" />
-              <span class="forward-arrow">←</span>
-              <input v-model="forwardModal.draft.targetHost" class="modal-input" placeholder="本地目标地址" style="flex: 1;" />
-              <input v-model.number="forwardModal.draft.targetPort" type="number" class="modal-input" placeholder="本地端口" style="width: 100px;" />
-              <button class="btn-sec-act" @click="addForwardRule">添加</button>
-            </div>
-            <div v-else class="forward-draft-row">
-              <input v-model.number="forwardModal.draft.socksPort" type="number" class="modal-input" placeholder="本地 SOCKS5 端口" style="width: 150px;" />
-              <span class="forward-arrow">→</span>
-              <span class="forward-draft-hint">经 SSH 通道代理所有 TCP 连接</span>
-              <button class="btn-sec-act" @click="addForwardRule">添加</button>
-            </div>
-
-            <div v-if="forwardModal.rules.length === 0" class="sftp-empty">还没有转发规则</div>
-            <div v-for="rule in forwardModal.rules" :key="rule.id" class="forward-rule-block">
-              <span :class="['forward-type-tag', rule.type]">{{ rule.type === 'remote' ? '远程 -R' : rule.type === 'socks' ? 'SOCKS5 -D' : '本地 -L' }}</span>
-              <span class="forward-rule-desc">
-                <template v-if="rule.type === 'remote'">服务器 :{{ forwardModal.actualPorts[rule.id] || rule.bindPort }} → 本机 {{ rule.targetHost }}:{{ rule.targetPort }}</template>
-                <template v-else-if="rule.type === 'socks'">SOCKS5 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 经服务器代理</template>
-                <template v-else>浏览器 127.0.0.1:{{ forwardModal.actualPorts[rule.id] || rule.localPort }} → 服务器 {{ rule.remoteHost }}:{{ rule.remotePort }}</template>
-              </span>
-              <span :class="['forward-status', forwardModal.running[rule.id] ? 'on' : 'off']">{{ forwardModal.running[rule.id] ? '运行中' : '已停止' }}</span>
-              <div class="forward-rule-actions">
-                <button class="btn-sec-act" @click="forwardModal.running[rule.id] ? stopForwardRule(rule) : startForwardRule(rule)">{{ forwardModal.running[rule.id] ? '停止' : '启动' }}</button>
-                <button class="btn-cancel" @click="removeForwardRule(rule)">删除</button>
-              </div>
-              <div v-if="forwardModal.errors[rule.id]" class="forward-error-line">⚠ {{ forwardModal.errors[rule.id] }}</div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button class="btn-cancel" @click="forwardModal.show = false">关闭</button>
-          </div>
-        </div>
-      </div>
-    </Transition>
+    <ForwardModal
+      :modal="forwardModal"
+      @add="addForwardRule"
+      @start="startForwardRule"
+      @stop="stopForwardRule"
+      @remove="removeForwardRule"
+      @close="forwardModal.show = false"
+    />
 
     <!-- SSH 密钥生成向导 -->
     <KeyGenModal
@@ -10208,67 +10339,18 @@ onUnmounted(() => {
     />
 
     <!-- 弹窗 7.5：全局界面字体更换选择弹窗 (FontSelectorModal) -->
-    <Transition name="modal-fade">
-    <div v-if="showFontSelectorModal" class="modal-overlay" @mousedown.self="showFontSelectorModal = false">
-      <div class="modal-card font-selector-modal-card">
-        <div class="modal-header">
-          <span class="modal-title">更换界面字体 (全局生效)</span>
-          <span class="modal-close" @click="showFontSelectorModal = false">✕</span>
-        </div>
-        <div class="modal-body font-selector-body">
-          <div class="font-selector-toolbar">
-            <label class="md3-checkbox-label">
-              <input 
-                type="checkbox" 
-                v-model="includeSystemFonts" 
-                @change="handleToggleSystemFonts" 
-                class="md3-check-native" 
-              />
-              <span>读取系统字体</span>
-            </label>
-            <span v-if="isReadingSystemFonts" class="font-loading-tip">正在读取系统中...</span>
-          </div>
-
-          <div class="font-list-scrollable">
-            <!-- 推荐默认与精选字体 -->
-            <div class="font-group-title">精选与默认界面字体</div>
-            <div 
-              v-for="item in presetUiFonts" 
-              :key="item.value"
-              :class="['font-item-row', appFontFamily === item.value ? 'active' : '']"
-              @click="applyAppFont(item.value)"
-            >
-              <div class="font-item-left">
-                <span class="font-item-name">{{ item.name }}</span>
-                <span class="font-item-preview" :style="{ fontFamily: item.value }">QShell Next 快速连接终端 1234567890</span>
-              </div>
-              <span v-if="appFontFamily === item.value" class="font-check-mark">✓</span>
-            </div>
-
-            <!-- 读取到的系统字体 -->
-            <template v-if="includeSystemFonts">
-              <div class="font-group-title">系统已安装字体 ({{ systemFontList.length }})</div>
-              <div 
-                v-for="f in systemFontList" 
-                :key="f"
-                :class="['font-item-row', appFontFamily.includes(f) ? 'active' : '']"
-                @click="applyAppFont(`'${f}', sans-serif`)"
-              >
-                <div class="font-item-left">
-                  <span class="font-item-name">{{ f }}</span>
-                  <span class="font-item-preview" :style="{ fontFamily: `'${f}', sans-serif` }">QShell Next 终端系统 1234567890 AaBbCc</span>
-                </div>
-                <span v-if="appFontFamily.includes(f)" class="font-check-mark">✓</span>
-              </div>
-            </template>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn-confirm" @click="showFontSelectorModal = false">完成选择</button>
-        </div>
-      </div>
-    </div>
-    </Transition>
+    <FontSelectorModal
+      :show="showFontSelectorModal"
+      :preset-fonts="presetUiFonts"
+      :app-font-family="appFontFamily"
+      :system-font-list="systemFontList"
+      :include-system-fonts="includeSystemFonts"
+      :is-reading-system-fonts="isReadingSystemFonts"
+      @close="showFontSelectorModal = false"
+      @update:include-system-fonts="includeSystemFonts = $event"
+      @toggle-system-fonts="handleToggleSystemFonts"
+      @apply-font="applyAppFont"
+    />
 
     <!-- 弹窗 8：备份与云同步管理 (BackupManagementDialog) -->
     <Transition name="modal-fade">
