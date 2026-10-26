@@ -7792,3 +7792,588 @@ body,
 .theme-preset-grid {
   justify-content: center;
 }
+/* ===================== 终端分屏 ===================== */
+.terminal-panes {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+}
+
+.terminal-panes .terminal-mount-box {
+  position: relative !important;
+  flex: 1 1 0;
+  width: auto !important;
+  height: 100% !important;
+  display: none;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: auto !important;
+}
+
+.terminal-panes .terminal-mount-box.is-active {
+  display: block;
+}
+
+.terminal-panes.is-split .terminal-mount-box.is-split {
+  display: block;
+  border-left: 1px solid var(--border-card);
+}
+/* 分屏：用间隙背景色画分割线（mount-box 有 border:none !important，不能用 border） */
+.terminal-panes.is-split {
+  column-gap: 1px;
+  background: var(--border-card);
+}
+/* 快速命令面板：显示目标会话 */
+.qp-target-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  color: var(--text-sub);
+  flex: none;
+}
+
+.qp-target-line b {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.qp-target-split {
+  opacity: 0.7;
+}
+/* 分屏：左右两格显示与活动高亮 */
+.terminal-panes.is-split .terminal-mount-box.is-pane-left,
+.terminal-panes.is-split .terminal-mount-box.is-pane-right {
+  display: block;
+}
+
+.terminal-panes.is-split .terminal-mount-box.is-pane-right {
+  border-left: 1px solid var(--border-card);
+}
+/* ===================== 分屏窗格布局（1 / 2 / 4 格） ===================== */
+.pane-grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--border-card);
+}
+
+.pane-grid.layout-1 {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  gap: 0;
+}
+
+.pane-grid.layout-2 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+
+.pane-grid.layout-4 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+.pane-slot {
+  position: relative;
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-card);
+}
+
+.pane-slot .terminal-mount-box {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: auto !important;
+}
+
+.pane-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-sub);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pane-empty:hover {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-main);
+}
+
+.pane-status {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 5;
+}
+
+.pane-latency {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 9px;
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+}
+
+.pane-disconnect {
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border-card);
+  background: transparent;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.pane-disconnect:hover {
+  color: var(--danger, #f48771);
+  border-color: var(--danger, #f48771);
+}
+/* 分屏按钮上的布局数量角标 */
+.split-count {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  min-width: 11px;
+  padding: 0 3px;
+  font-size: 9px;
+  line-height: 11px;
+  border-radius: 6px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  text-align: center;
+  pointer-events: none;
+  font-weight: 700;
+}
+/* ===================== 终端区：窗格容器 + 底部状态栏 ===================== */
+.terminal-panes-container {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.terminal-status-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 26px;
+  padding: 0 10px;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-card);
+  font-size: 11px;
+  color: var(--text-sub);
+  user-select: none;
+}
+
+.status-session {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-main);
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.status-pane-tag {
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: 8px;
+  background: var(--bg-capsule);
+}
+
+.status-spacer {
+  flex: 1;
+}
+
+.status-cmd-btn {
+  height: 19px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-capsule);
+  color: var(--text-main);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.status-cmd-btn:hover {
+  border-color: var(--color-primary);
+}
+
+/* 单格且无会话：不可点击的空状态 */
+.pane-empty-static {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  gap: 6px;
+  user-select: none;
+}
+
+.pane-empty-title {
+  font-size: 14px;
+  color: var(--text-main);
+}
+
+.pane-empty-hint {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+/* 面板关闭按钮 */
+.qp-close-btn {
+  margin-left: 2px;
+}
+/* 终端舞台改为纵向 flex：窗格容器占满剩余高度，状态栏固定在底部 */
+.terminal-stage {
+  display: flex;
+  flex-direction: column;
+}
+/* 分屏：会话框与空窗格按布局绝对定位 */
+.pane-slot-box {
+  position: absolute !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  pointer-events: auto !important;
+  z-index: auto !important;
+  width: auto;
+  height: auto;
+}
+
+.pane-empty-overlay {
+  position: absolute;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pane-grid.layout-2 .pane-slot-box,
+.pane-grid.layout-3 .pane-slot-box,
+.pane-grid.layout-4 .pane-slot-box {
+  border: 1px solid var(--border-card);
+}
+/* 每窗格状态浮层（右上角） */
+.pane-status-overlay {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  justify-content: flex-end;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 8px;
+  pointer-events: none;
+}
+
+.pane-status-overlay .pane-latency,
+.pane-status-overlay .pane-disconnect {
+  pointer-events: auto;
+}
+/* 分屏布局选择菜单 */
+.pane-menu-wrap {
+  position: relative;
+}
+
+.pane-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 200;
+  min-width: 96px;
+  padding: 4px;
+  border-radius: 8px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pane-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-main);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.pane-menu-item:hover {
+  background: var(--bg-capsule);
+}
+
+.pane-menu-item.active {
+  color: var(--color-primary);
+}
+
+.pane-menu-icon {
+  width: 14px;
+  height: 12px;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  opacity: 0.75;
+  flex: none;
+}
+
+.pane-menu-icon.layout-icon-2 {
+  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
+}
+
+.pane-menu-icon.layout-icon-3 {
+  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%),
+              linear-gradient(to bottom, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
+  background-position: 0 0, 50% 0;
+  background-size: 100% 100%, 50% 100%;
+  background-repeat: no-repeat;
+}
+
+.pane-menu-icon.layout-icon-4 {
+  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%),
+              linear-gradient(to bottom, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
+  background-repeat: no-repeat;
+}
+/* 会话框按窗格区域定位（用 CSS 变量，避开原有 !important 的 100% 宽高） */
+.pane-slot-box {
+  position: absolute !important;
+  left: var(--pane-x, 0) !important;
+  top: var(--pane-y, 0) !important;
+  width: var(--pane-w, 100%) !important;
+  height: var(--pane-h, 100%) !important;
+  display: block;
+}
+
+.pane-slot-box.pane-hidden {
+  display: none !important;
+}
+/* 修正首页背景：分屏容器背景透明，分割线交给窗格边框 */
+.pane-grid {
+  gap: 0;
+  background: transparent;
+}
+/* BUG-052：状态浮层按窗格区域定位 */
+.pane-status-overlay {
+  left: var(--pane-x, 0) !important;
+  top: var(--pane-y, 0) !important;
+  width: var(--pane-w, 100%) !important;
+  height: auto !important;
+  padding: 3px 6px;
+}
+
+/* BUG-050：去掉终端容器独立圆角（与底部状态栏拼接） */
+.terminal-mount-box,
+.terminal-mount-box .xterm,
+.terminal-mount-box .xterm-screen,
+.terminal-mount-box .xterm-viewport {
+  border-radius: 0 !important;
+}
+/* 分屏窗格分隔线：用内阴影（border 被 !important 覆盖） */
+.pane-grid.layout-2 .pane-slot-box,
+.pane-grid.layout-3 .pane-slot-box,
+.pane-grid.layout-4 .pane-slot-box {
+  box-shadow: inset 0 0 0 1px var(--border-card);
+}
+/* 分屏窗格分隔线：用伪元素画在内容之上（inset 阴影会被 xterm 覆盖） */
+.pane-grid.layout-2 .pane-slot-box::after,
+.pane-grid.layout-3 .pane-slot-box::after,
+.pane-grid.layout-4 .pane-slot-box::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border-card);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 4;
+}
+/* 状态栏：当前活动窗格名称标签 */
+.status-pane-name {
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: 8px;
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+}
+/* SFTP 面板：当前所属终端指示器 */
+.sftp-session-indicator {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px 3px;
+  font-size: 11px;
+  color: var(--text-main);
+  user-select: none;
+}
+
+.sftp-session-name {
+  font-weight: 600;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sftp-session-pane {
+  padding: 0 6px;
+  line-height: 15px;
+  border-radius: 8px;
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+  font-size: 10px;
+}
+/* 窗格裁切：面板展开导致变矮时内容不溢出到面板区域 */
+.pane-slot-box {
+  overflow: hidden;
+}
+/* BUG-056：空窗格与终端窗格使用相同的边框 */
+.pane-grid.layout-2 .pane-empty-overlay::after,
+.pane-grid.layout-3 .pane-empty-overlay::after,
+.pane-grid.layout-4 .pane-empty-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border-card);
+  box-sizing: border-box;
+  pointer-events: none;
+}
+/* 分屏：原生 CSS Grid 布局（替代百分比绝对定位） */
+.pane-grid {
+  display: grid;
+  position: absolute;
+  inset: 0;
+  gap: 1px;
+  background: var(--border-card);
+}
+
+.pane-grid.layout-1 {
+  grid-template: 1fr / 1fr;
+  gap: 0;
+  background: transparent;
+}
+
+.pane-grid.layout-2 {
+  grid-template: 1fr / 1fr 1fr;
+}
+
+.pane-grid.layout-3 {
+  grid-template: 1fr 1fr / 1fr 1fr;
+}
+
+.pane-grid.layout-4 {
+  grid-template: 1fr 1fr / 1fr 1fr;
+}
+
+/* 会话框与空窗格：作为 grid 子项自然拉伸 */
+.pane-slot-box {
+  position: relative !important;
+  left: auto !important;
+  top: auto !important;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-empty-overlay {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 分隔线：grid 间隙背景色 + 伪元素可选 */
+.pane-grid.layout-2 .pane-slot-box::after,
+.pane-grid.layout-3 .pane-slot-box::after,
+.pane-grid.layout-4 .pane-slot-box::after,
+.pane-grid.layout-2 .pane-empty-overlay::after,
+.pane-grid.layout-3 .pane-empty-overlay::after,
+.pane-grid.layout-4 .pane-empty-overlay::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border-card);
+  box-sizing: border-box;
+  pointer-events: none;
+  z-index: 4;
+}
+/* BUG-057：分屏底色统一透明，分割线只靠窗格伪元素边框 */
+.pane-grid,
+.pane-grid.layout-2,
+.pane-grid.layout-3,
+.pane-grid.layout-4 {
+  gap: 0;
+  background: transparent;
+}
+/* 终端视口：纵向 flex（stage 撑满、命令面板上推、状态栏固定底部） */
+.terminal-viewport {
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* 旧的面板让位规则改为由 flex 布局处理，避免与窗格冲突 */
+.terminal-viewport.palette-open .terminal-mount-box {
+  height: 100% !important;
+}
+
+/* 状态栏始终固定在底部 */
+.terminal-status-bar {
+  flex: 0 0 auto;
+  order: 999;
+}
+/* 单屏左下角残留圆角：视口与窗格容器统一直角 */
+.terminal-viewport {
+  border-radius: 0 !important;
+}
+
+.terminal-panes-container,
+.pane-grid,
+.pane-slot-box,
+.pane-slot-box .xterm,
+.pane-slot-box .xterm-viewport,
+.pane-slot-box .xterm-screen {
+  border-radius: 0 !important;
+}

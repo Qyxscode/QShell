@@ -180,11 +180,15 @@
   <svg v-else-if="name === 'close'" :width="size || 12" :height="size || 12" viewBox="0 0 16 16" fill="none" class="v-icon">
     <path d="M4 4L12 12M12 4L4 12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
   </svg>
+  <svg v-else-if="name === 'split'" :width="size || 20" :height="size || 20" viewBox="0 0 24 24" fill="none" class="v-icon" xmlns="http://www.w3.org/2000/svg">
+    <rect x="3" y="4" width="18" height="16" rx="2.5" stroke="currentColor" stroke-width="1.8" />
+    <line x1="12" y1="4.5" x2="12" y2="19.5" stroke="currentColor" stroke-width="1.8" />
+  </svg>
 </template>
 
 <script setup lang="ts">
 defineProps<{
-  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin";
+  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin" | "split";
   size?: number | string;
   expanded?: boolean;
 }>();
