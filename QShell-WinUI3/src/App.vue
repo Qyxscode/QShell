@@ -453,7 +453,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.83");
+const appVersion = ref("0.99.84");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -700,7 +700,9 @@ function setPaneLayout(n: 1 | 2 | 3 | 4) {
     refitAll();
     requestAnimationFrame(() => {
       refitAll();
-      window.setTimeout(refitAll, 80);
+      window.setTimeout(refitAll, 120);
+      window.setTimeout(refitAll, 400);
+      window.setTimeout(refitAll, 700);
     });
   });
 }
@@ -814,13 +816,63 @@ function disconnectSessionById(sid: string) {
   if (tab) void closeSession(tab);
 }
 
-function pickSessionForPane(pkey: string) {
+const panePicker = ref<{ show: boolean; pkey: string; query: string }>({ show: false, pkey: "", query: "" });
+const pendingPaneTarget = ref("");
+
+function openPanePicker(pkey: string) {
+  panePicker.value = { show: true, pkey, query: "" };
+}
+
+function panePickerHosts(): HostItem[] {
+  const list: HostItem[] = [];
+  const seen = new Set<string>();
+  // 只读取左侧设备列表，按 host:port:user 去重
+  for (const g of configData.value.devices || []) {
+    for (const h of (g.hosts || [])) {
+      const key = `${h.host}:${h.port}:${h.user || ""}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      list.push(h);
+    }
+  }
+  return list;
+}
+
+const panePickerOpened = computed(() => {
   const used = new Set(Object.values(paneSessions.value).filter(Boolean));
-  const candidate = sessions.value.find(s => !used.has(s.id));
-  if (!candidate) return;
-  paneSessions.value[pkey] = candidate.id;
-  activeSessionId.value = candidate.id;
-  nextTick(() => candidate.fitInstance?.fit());
+  const q = panePicker.value.query.trim().toLowerCase();
+  return sessions.value
+    .filter(s => !used.has(s.id))
+    .filter(s => !q || s.name.toLowerCase().includes(q) || (s.host?.host || "").toLowerCase().includes(q))
+    .map(s => ({ id: s.id, name: s.name }));
+});
+
+const panePickerHostsList = computed(() => {
+  const q = panePicker.value.query.trim().toLowerCase();
+  return panePickerHosts().filter(h =>
+    !q || (h.name || "").toLowerCase().includes(q) || (h.host || "").toLowerCase().includes(q)
+  );
+});
+
+function assignPaneFromPicker(sid: string) {
+  const pkey = panePicker.value.pkey;
+  if (!pkey || !sid) return;
+  paneSessions.value[pkey] = sid;
+  activeSessionId.value = sid;
+  panePicker.value.show = false;
+  nextTick(() => sessions.value.forEach(s => s.fitInstance?.fit()));
+}
+
+let panePickerOpening = false;
+function connectHostIntoPane(pkey: string, h: HostItem) {
+  if (panePickerOpening) return;
+  const target = pkey || panePicker.value.pkey;
+  panePicker.value.show = false;
+  if (!target) return;
+  panePickerOpening = true;
+  window.setTimeout(() => { panePickerOpening = false; }, 1500);
+  pendingPaneTarget.value = target;
+  void openSession(h);
 }
 
 const sessions = ref<SessionTab[]>([]);
@@ -1460,6 +1512,9 @@ const contextMenu = ref({
   targetHistoryIndex: -1,
 });
 
+function sessionCountForHost(h: HostItem): number {
+  return sessions.value.filter(s => s.host?.host === h.host && s.host?.port === h.port).length;
+}
 function openContextMenu(
   e: MouseEvent,
   type: "host" | "group" | "tab" | "terminal" | "sftp_item" | "sftp_bg" | "memo_item" | "memo_group" | "memo_bg",
@@ -1473,6 +1528,17 @@ function openContextMenu(
 ) {
   e.preventDefault();
   e.stopPropagation();
+  // 终端右键：必须落在有存活会话的窗格上（按窗格判断，而不是全局活动会话）
+  if (type === "terminal") {
+    const hitEl = (e.target as HTMLElement)?.closest(".pane-slot-box") as HTMLElement | null;
+    const hitId = hitEl?.id?.startsWith("term-") ? hitEl.id.slice(5) : "";
+    const hitTab = sessions.value.find(s => s.id === hitId);
+    if (!hitTab?.alive) return;
+    // 右键的窗格即操作对象：先把它设为活动会话，避免菜单项作用到别的屏
+    if (activeSessionId.value !== hitId) {
+      switchSession(hitId);
+    }
+  }
   // 菜单实际高度通常仅为 120px~150px 左右，只有在紧贴底部不足 150px 时才做贴边限制
   const menuEstimatedHeight = (type === "sftp_item" || type === "host" || type === "terminal") ? 250 : 170;
   const menuEstimatedWidth = 190;
@@ -1514,6 +1580,14 @@ function openContextMenu(
   });
 }
 
+
+function handleGlobalMousedownCapture(e: MouseEvent) {
+  if (!contextMenu.value.show) return;
+  const t = e.target as HTMLElement | null;
+  if (!t) return;
+  if (t.closest(".context-menu")) return;
+  closeContextMenu();
+}
 function closeContextMenu() {
   contextMenu.value.show = false;
 }
@@ -1991,7 +2065,13 @@ watch(() => commandPalette.value.open, () => {
         sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
       }
     });
-  }, 850);
+    window.setTimeout(() => {
+      ids.forEach(sid => {
+        const t2 = sessions.value.find(s => s.id === sid);
+        t2?.fitInstance?.fit();
+      });
+    }, 600);
+  }, 320);
 });
 function movePaletteSelection(delta: number) {
   const list = paletteFiltered.value;
@@ -5075,7 +5155,12 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     is_connecting: true,
   });
   sessions.value.push(newTab);
-  assignPaneToSession(newTab.id);
+  if (pendingPaneTarget.value) {
+    paneSessions.value[pendingPaneTarget.value] = newTab.id;
+    pendingPaneTarget.value = "";
+  } else {
+    assignPaneToSession(newTab.id);
+  }
   activeSessionId.value = sid;
   clearSftpState();
   resetNetworkHistory();
@@ -7508,6 +7593,8 @@ onMounted(async () => {
   window.addEventListener("click", handleBaudOutsideClick);
   window.addEventListener("qshell-close-selects", handleCloseSelects);
   window.addEventListener("click", handleGlobalClick);
+    // 右键菜单：捕获阶段监听，避免被终端内部事件吞掉
+    window.addEventListener("mousedown", handleGlobalMousedownCapture, true);
   window.addEventListener("resize", handleWindowResize);
   window.addEventListener("keydown", handleFullscreenKey);
   loadCommandHistory();
@@ -7604,6 +7691,7 @@ onUnmounted(() => {
   window.removeEventListener('click', handleBaudOutsideClick);
   window.removeEventListener("qshell-close-selects", handleCloseSelects);
   window.removeEventListener("click", handleGlobalClick);
+    window.removeEventListener("mousedown", handleGlobalMousedownCapture, true);
   window.removeEventListener("resize", handleWindowResize);
   window.removeEventListener("keydown", handleFullscreenKey);
   window.removeEventListener("focus", handleTrafficSchedulerWake);
@@ -8104,6 +8192,10 @@ onUnmounted(() => {
 
             <div class="terminal-panes-container">
             <div class="pane-grid" :class="'layout-' + paneLayout">
+              <div class="pane-grid-lines" :class="'lines-' + paneLayout">
+                <div class="grid-v-line"></div>
+                <div class="grid-h-line"></div>
+              </div>
               <div
                 v-for="tab in sessions"
                 :key="tab.id"
@@ -8133,7 +8225,7 @@ onUnmounted(() => {
                   <div class="pane-empty-title">终端空闲</div>
                   <div class="pane-empty-hint">双击左侧设备列表以连接</div>
                 </div>
-                <div v-else class="pane-empty" @click="pickSessionForPane(pkey)">点击选择会话</div>
+                <div v-else class="pane-empty" @click.stop="openPanePicker(pkey)">点击选择会话</div>
               </div>
             </div>
             </div>
@@ -8205,6 +8297,37 @@ onUnmounted(() => {
   ⌘ 命令面板
   </button>
   </div>
+          <Transition name="modal-fade">
+            <div v-if="panePicker.show" class="modal-overlay" @mousedown.self="panePicker.show = false">
+              <div class="modal-card pane-picker-modal">
+                <div class="modal-header">
+                  <span class="modal-title">选择主机接入此屏</span>
+                  <span class="modal-close" @click="panePicker.show = false">✕</span>
+                </div>
+                <div class="modal-body pane-picker-body">
+                  <input v-model="panePicker.query" class="modal-input" placeholder="搜索主机名或地址..." />
+                  <div v-if="panePickerOpened.length > 0" class="pane-picker-section">
+                    <div class="pane-picker-title">已打开的会话</div>
+                    <button v-for="it in panePickerOpened" :key="'s-' + it.id" class="pane-picker-row" @click="assignPaneFromPicker(it.id)">
+                      <span class="pk-main">{{ it.name }}</span>
+                      <span class="pk-sub">已连接</span>
+                    </button>
+                  </div>
+                  <div class="pane-picker-section">
+                    <div class="pane-picker-title">设备列表</div>
+                    <div v-if="panePickerHostsList.length === 0" class="pane-picker-empty">没有匹配的主机</div>
+                    <button v-for="h in panePickerHostsList" :key="'h-' + h.name + h.host" class="pane-picker-row" @click="connectHostIntoPane(panePicker.pkey, h)">
+                      <span class="pk-main">{{ h.name }}</span>
+                      <span class="pk-sub">
+                        <span v-if="sessionCountForHost(h) > 0" class="pk-linked">已连接 {{ sessionCountForHost(h) }}</span>
+                        <span v-else>{{ h.host }}</span>
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Transition>
         </main>
 
         <!-- 右侧拖拽分割调节手柄 -->
@@ -8498,6 +8621,9 @@ onUnmounted(() => {
             <div class="card-body">
               <div class="card-row1">
                 <span class="card-name">{{ h.name }}</span>
+                <span v-if="sessionCountForHost(h) > 0" class="card-linked-badge" :title="`已打开 ${sessionCountForHost(h)} 个会话`">
+                  <span class="linked-dot"></span>{{ sessionCountForHost(h) > 1 ? sessionCountForHost(h) : "" }}
+                </span>
                 <div class="card-row1-right">
                   <button class="card-trace-btn" @click.stop="openTraceRoute(h)" title="路由追踪（可视化）">路由追踪</button>
                   <span 
