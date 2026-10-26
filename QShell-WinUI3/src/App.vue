@@ -453,7 +453,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.84");
+const appVersion = ref("0.99.85");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -629,7 +629,7 @@ interface SessionTab {
   recentOutput?: string;
 }
 
-// --- 分屏：窗格槽位模型（1 / 2 / 4 格，每格可空）---
+// --- 分屏：窗格槽位模型（1 / 2 / 3 / 4 格，每格可空）---
 function loadSavedPaneLayout(): 1 | 2 | 3 | 4 {
   try {
     const raw = localStorage.getItem("qshell_pane_layout");
@@ -638,7 +638,69 @@ function loadSavedPaneLayout(): 1 | 2 | 3 | 4 {
   } catch {}
   return 1;
 }
-const paneLayout = ref<1 | 2 | 3 | 4>(loadSavedPaneLayout());
+const paneLayoutSetting = ref<1 | 2 | 3 | 4>(loadSavedPaneLayout());
+const paneLayout = ref<1 | 2 | 3 | 4>(paneLayoutSetting.value);
+
+/** 切换布局并重新分配会话：超出新布局范围的槽位会被回收重排 */
+function reshufflePanes(n: 1 | 2 | 3 | 4) {
+  paneLayout.value = n;
+  const validKeys = paneKeys.value;
+  const validIds = new Set(sessions.value.map(s => s.id));
+
+  // 0. 清理指向已关闭会话的槽位（否则会占位显示为空）
+  for (const key of ["p1", "p2", "p3", "p4"]) {
+    const sid = paneSessions.value[key];
+    if (sid && !validIds.has(sid)) paneSessions.value[key] = "";
+  }
+
+  // 1. 回收超出新布局范围的槽位
+  const pending: string[] = [];
+  for (const key of ["p1", "p2", "p3", "p4"]) {
+    if (!validKeys.includes(key) && paneSessions.value[key]) {
+      pending.push(paneSessions.value[key]);
+      paneSessions.value[key] = "";
+    }
+  }
+
+  // 2. 合法槽位里已有的会话标记为已占
+  const used = new Set<string>();
+  for (const key of validKeys) {
+    const sid = paneSessions.value[key];
+    if (sid) used.add(sid);
+  }
+
+  // 3. 活动会话优先，其余按打开顺序，最后是被回收的会话
+  const ordered = [activeSessionId.value, ...sessions.value.map(s => s.id), ...pending]
+    .filter(Boolean)
+    .filter(id => validIds.has(id));
+  const seen = new Set<string>();
+  for (const sid of ordered) {
+    if (seen.has(sid)) continue;
+    seen.add(sid);
+    if (used.has(sid)) continue;
+    const empty = validKeys.find(k => !paneSessions.value[k]);
+    if (!empty) break;
+    paneSessions.value[empty] = sid;
+    used.add(sid);
+  }
+
+  nextTick(() => sessions.value.forEach(s => s.fitInstance?.fit()));
+}
+
+/** 根据会话数自动调整当前布局（设定值不变） */
+// 会话数量变化时自动调整布局（关闭会话收缩、打开会话扩张）
+watch(
+  () => sessions.value.length,
+  () => {
+    applyAutoLayout();
+  }
+);
+function applyAutoLayout() {
+  const count = sessions.value.length;
+  const setting = paneLayoutSetting.value;
+  const target = (count === 0 ? setting : Math.max(1, Math.min(setting, count))) as 1 | 2 | 3 | 4;
+  reshufflePanes(target);
+}
 const paneSessions = ref<Record<string, string>>({ p1: "", p2: "", p3: "", p4: "" });
 const paneKeys = computed<string[]>(() => {
   if (paneLayout.value === 1) return ["p1"];
@@ -650,61 +712,13 @@ const paneKeys = computed<string[]>(() => {
 const showPaneMenu = ref(false);
 
 function setPaneLayout(n: 1 | 2 | 3 | 4) {
-  paneLayout.value = n;
+  paneLayoutSetting.value = n;
   showPaneMenu.value = false;
-  const validKeys = paneKeys.value;
-
-  // 1. 超出新布局范围的槽位：清空并把会话收进待分配池
-  const pending: string[] = [];
-  for (const key of ["p1", "p2", "p3", "p4"]) {
-    if (!validKeys.includes(key) && paneSessions.value[key]) {
-      pending.push(paneSessions.value[key]);
-      paneSessions.value[key] = "";
-    }
-  }
-
-  // 2. 合法槽位中已有会话视为已占用
-  const used = new Set<string>();
-  for (const key of validKeys) {
-    const sid = paneSessions.value[key];
-    if (sid) used.add(sid);
-  }
-
-  // 3. 活动会话优先，其次按打开顺序，最后是被清出来的会话，依次填满空槽
-  const ordered = [activeSessionId.value, ...sessions.value.map(s => s.id), ...pending].filter(Boolean);
-  const seen = new Set<string>();
-  for (const sid of ordered) {
-    if (seen.has(sid)) continue;
-    seen.add(sid);
-    if (used.has(sid)) continue;
-    const empty = validKeys.find(k => !paneSessions.value[k]);
-    if (!empty) break;
-    paneSessions.value[empty] = sid;
-    used.add(sid);
-  }
+  // 手动选择：强制显示该布局（会话不足也显示空框）
+  reshufflePanes(n);
   try {
     localStorage.setItem("qshell_pane_layout", String(n));
   } catch {}
-  // 切换布局后：清掉动画冻结，多帧适配并通知远端新尺寸（否则旧终端会缩进/截断）
-  sessions.value.forEach(s => { s.paletteAnimating = false; });
-  const refitAll = () => {
-    sessions.value.forEach(s => {
-      if (!s.termInstance || !s.fitInstance) return;
-      try {
-        s.fitInstance.fit();
-      } catch {}
-      sendTerminalResize(s, s.termInstance.cols, s.termInstance.rows);
-    });
-  };
-  nextTick(() => {
-    refitAll();
-    requestAnimationFrame(() => {
-      refitAll();
-      window.setTimeout(refitAll, 120);
-      window.setTimeout(refitAll, 400);
-      window.setTimeout(refitAll, 700);
-    });
-  });
 }
 
 
@@ -715,6 +729,18 @@ function assignPaneToSession(sid: string) {
     if (!paneSessions.value[key]) {
       paneSessions.value[key] = sid;
       return key;
+    }
+  }
+  // 兜底：没有空槽时自动扩屏（2 → 3 → 4），保证新会话可见
+  if (paneLayout.value < 4) {
+    const nextLayout = paneLayout.value === 2 ? 3 : 4;
+    paneLayoutSetting.value = nextLayout;
+    paneLayout.value = nextLayout;
+    for (const key of paneKeys.value) {
+      if (!paneSessions.value[key]) {
+        paneSessions.value[key] = sid;
+        return key;
+      }
     }
   }
   return "";
@@ -5809,6 +5835,11 @@ function startMonitoringLoop(sid: string) {
 
 function switchSession(sid: string) {
   if (activeSessionId.value === sid) return;
+  // 兜底：目标会话不在任何屏位时，放进当前活动屏（4 屏已满的情况）
+  if (paneLayout.value > 1 && !paneKeyOfSession(sid)) {
+    const curKey = paneKeyOfSession(activeSessionId.value) || paneKeys.value[0];
+    if (curKey) paneSessions.value[curKey] = sid;
+  }
   activeSessionId.value = sid;
   clearSftpState();
   // 切标签时恢复该会话自己的监控快照，避免串到上一台主机
@@ -5896,6 +5927,9 @@ function closeSession(tab: SessionTab) {
     startMonitoringLoop(nextTab.id);
   }
 
+
+  // 关闭后确定性触发布局重算（不依赖 watch 的时序）
+  nextTick(() => applyAutoLayout());
 }
 
 const sftpErrorMsg = ref("");
