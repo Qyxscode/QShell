@@ -33,6 +33,7 @@ import KeyGenModal from "./components/KeyGenModal.vue";
 import UnlockModal from "./components/UnlockModal.vue";
 import EncryptionModal from "./components/EncryptionModal.vue";
 import UpdateDialog from "./components/UpdateDialog.vue";
+import DropUploadOverlay from "./components/DropUploadOverlay.vue";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 
@@ -453,7 +454,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.85");
+const appVersion = ref("0.99.86");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -1243,6 +1244,13 @@ function makeTaskId(prefix: "up" | "down"): string {
 }
 
 const currentSftpPath = ref("/");
+// 每个会话各自「停留过」的远端目录：拖拽上传到非活动窗格时，
+// 直接用它上次浏览的目录，不必先切标签、也不必重新逐级进入。
+const sftpPathBySession = ref<Record<string, string>>({});
+function rememberSftpPathFor(sessionId: string, path: string) {
+  if (!sessionId || !path) return;
+  sftpPathBySession.value[sessionId] = path;
+}
 const sftpFiles = ref<SftpFileItem[]>([]);
 const sftpSortKey = ref<"name" | "size">("name");
 const sftpSortAsc = ref(true);
@@ -1360,20 +1368,39 @@ const hostAlertList = ref<HostAlertInfo[]>([]);
 const showAlertPopover = ref(false);
 
 const alertPopoverTargetRight = ref(120);
+const alertPopoverEl = ref<HTMLElement | null>(null);
+const alertPopoverLeft = ref(15);
+const transferPopoverEl = ref<HTMLElement | null>(null);
 const transferPopoverTargetRight = ref(85);
 
+
+/** 根据按钮与气泡的实际位置计算三角偏移（避免硬编码窗口边距导致漂移） */
+function computeArrowOffset(btn: HTMLElement | null, popover: HTMLElement | null): number | null {
+  if (!btn || !popover) return null;
+  const b = btn.getBoundingClientRect();
+  const p = popover.getBoundingClientRect();
+  if (p.width <= 0) return null;
+  const btnCenterX = b.left + b.width / 2;
+  const distFromRight = p.right - btnCenterX;
+  // 三角宽 16px：限制在气泡内（距左右各留 20px）
+  // 三角左右各留 20px，保证完整显示（太靠边会被气泡圆角裁开）
+  return Math.round(Math.max(20, Math.min(p.width - 20, distFromRight)));
+}
 function toggleAlertPopover(e?: MouseEvent) {
   if (showTransferMonitor.value) {
     showTransferMonitor.value = false;
   }
   if (!showAlertPopover.value && e?.currentTarget) {
     const btn = e.currentTarget as HTMLElement;
-    const rect = btn.getBoundingClientRect();
-    const btnCenterX = rect.left + rect.width / 2;
-    // 气泡固定 right: 15px，气泡宽度 360px
-    // 气泡右边界距离窗口右侧为 15px，所以小三角相对于气泡右边界的距离为：
-    const popoverRightEdge = window.innerWidth - 15;
-    alertPopoverTargetRight.value = Math.max(16, Math.min(340, popoverRightEdge - btnCenterX));
+    // 气泡跟随按钮：按钮中心尽量对齐气泡中线，并限制在窗口内
+    const b = btn.getBoundingClientRect();
+    const centerX = b.left + b.width / 2;
+    const popW = 360;
+    alertPopoverLeft.value = Math.round(Math.max(12, Math.min(window.innerWidth - popW - 12, centerX - popW / 2)));
+    window.setTimeout(() => {
+      const offset = computeArrowOffset(btn, alertPopoverEl.value);
+      if (offset !== null) alertPopoverTargetRight.value = offset;
+    }, 220);
   }
   if (!showAlertPopover.value) {
     // 打开面板时，若有新的掉线事件优先显示事件页签
@@ -1392,11 +1419,10 @@ function toggleTransferMonitor(e?: MouseEvent) {
   }
   if (!showTransferMonitor.value && e?.currentTarget) {
     const btn = e.currentTarget as HTMLElement;
-    const rect = btn.getBoundingClientRect();
-    const btnCenterX = rect.left + rect.width / 2;
-    // 气泡固定 right: 15px，气泡宽度 320px
-    const popoverRightEdge = window.innerWidth - 15;
-    transferPopoverTargetRight.value = Math.max(16, Math.min(300, popoverRightEdge - btnCenterX));
+    window.setTimeout(() => {
+      const offset = computeArrowOffset(btn, transferPopoverEl.value);
+      if (offset !== null) transferPopoverTargetRight.value = offset;
+    }, 220);
   }
   showTransferMonitor.value = !showTransferMonitor.value;
 }
@@ -2154,10 +2180,145 @@ function togglePaletteMemos() {
 }
 function openCommandPalette() {
   commandPalette.value = { open: true, query: "", selected: 0 };
+  // 两个底部抽屉都参与布局，同时展开会把终端压得太矮，互斥
+  showBroadcastPanel.value = false;
   void nextTick(() => {
     document.querySelector<HTMLInputElement>(".qp-input")?.focus();
   });
 }
+
+// ===== 广播台：勾选多台已连接会话，一次下发命令 =====
+const showBroadcastPanel = ref(false);
+const broadcastSelected = ref<string[]>([]);
+const broadcastInput = ref("");
+const broadcastHint = ref("");
+const broadcastSending = ref(false);
+
+const broadcastCandidates = computed(() => sessions.value.filter(s => s.alive));
+
+/** 只有还在线的会话才算数：关掉的会话即使残留在选择里也不计入 */
+function broadcastAliveSelected(): string[] {
+  return broadcastSelected.value.filter(id => sessions.value.some(s => s.id === id && s.alive));
+}
+
+const broadcastSelectedCount = computed(() => broadcastAliveSelected().length);
+
+function toggleBroadcastPanel() {
+  showBroadcastPanel.value = !showBroadcastPanel.value;
+  if (showBroadcastPanel.value && commandPalette.value.open) closeCommandPaletteForce();
+  if (showBroadcastPanel.value) {
+    void nextTick(() => document.querySelector<HTMLTextAreaElement>(".bp-input")?.focus());
+  }
+}
+
+function toggleBroadcastTarget(sid: string) {
+  const idx = broadcastSelected.value.indexOf(sid);
+  if (idx >= 0) broadcastSelected.value.splice(idx, 1);
+  else broadcastSelected.value.push(sid);
+}
+
+/** 会话关闭时同步移出广播集合，避免残留的 id 被当成目标 */
+function removeBroadcastTarget(sid: string) {
+  const idx = broadcastSelected.value.indexOf(sid);
+  if (idx >= 0) broadcastSelected.value.splice(idx, 1);
+}
+
+function selectAllBroadcastTargets() {
+  broadcastSelected.value = broadcastCandidates.value.map(s => s.id);
+}
+
+function clearBroadcastTargets() {
+  broadcastSelected.value = [];
+}
+
+/** 沿用分屏窗格的配色，和状态栏的色点对得上 */
+function broadcastPaneColor(sid: string): string {
+  const pkey = paneKeyOfSession(sid);
+  return pkey ? PANE_COLORS[pkey] || "#8a8a94" : "#8a8a94";
+}
+
+function broadcastPaneLabel(sid: string): string {
+  if (paneLayout.value === 1) return "";
+  const pkey = paneKeyOfSession(sid);
+  if (!pkey) return "未上屏";
+  return `第 ${paneKeys.value.indexOf(pkey) + 1} 屏`;
+}
+
+function showBroadcastHint(text: string, holdMs = 4000) {
+  broadcastHint.value = text;
+  window.setTimeout(() => {
+    if (broadcastHint.value === text) broadcastHint.value = "";
+  }, holdMs);
+}
+
+/**
+ * 群发：逐台下发，单台失败不中断其余台。
+ * 多行输入按行依次回车，shell 里就是逐条执行。
+ */
+async function sendBroadcast() {
+  if (broadcastSending.value) return;
+  const cmd = broadcastInput.value.trim();
+  const targets = broadcastAliveSelected();
+  if (!cmd || targets.length === 0) return;
+
+  const payload = cmd.split(/\r?\n/).map(line => line + "\r").join("");
+  const failed: string[] = [];
+  let sent = 0;
+
+  broadcastSending.value = true;
+  try {
+    for (const sid of targets) {
+      const tab = sessions.value.find(s => s.id === sid);
+      if (!tab?.alive) {
+        failed.push(`${tab?.name || sid}（已断开）`);
+        continue;
+      }
+      if (tab.read_only) {
+        failed.push(`${tab.name}（只读）`);
+        continue;
+      }
+      try {
+        if (isGenericProtocol(tab.host?.protocol)) {
+          await invoke("write_generic_session", { sessionId: sid, data: payload });
+        } else {
+          await invoke("write_ssh_session", { sessionId: sid, data: payload });
+        }
+        sent++;
+      } catch (error: any) {
+        const raw = String(error?.message || error || "发送失败");
+        failed.push(`${tab.name}（${raw}）`);
+      }
+    }
+  } finally {
+    broadcastSending.value = false;
+  }
+
+  // 群发也算执行了一条命令，记进历史供命令面板复用
+  if (sent > 0) recordCommand(cmd);
+
+  if (failed.length === 0) {
+    showBroadcastHint(`已发送到 ${sent} 台会话`);
+    broadcastInput.value = "";
+  } else {
+    const detail = failed.length > 1 ? `${failed[0]} 等 ${failed.length} 台` : failed[0];
+    showBroadcastHint(sent > 0 ? `已发送 ${sent} 台，失败：${detail}` : `发送失败：${detail}`);
+    // 有失败时保留输入内容，方便改完成功的部分后再补发
+    if (sent > 0) broadcastInput.value = "";
+  }
+}
+
+// 抽屉开合会改变终端可见高度，动画结束后统一重排一次
+watch(showBroadcastPanel, (open) => {
+  const ids = visiblePaneSessionIds();
+  window.setTimeout(() => {
+    ids.forEach(sid => {
+      const t = sessions.value.find(s => s.id === sid);
+      if (!t?.fitInstance) return;
+      t.fitInstance.fit();
+      if (t.termInstance) sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
+    });
+  }, open ? 820 : 820);
+});
 
 function runPaletteItem(item: PaletteItem) {
   commandPalette.value.query = "";
@@ -5081,7 +5242,10 @@ function updateTerminalBackgroundPreview() {
 function applyTerminalSettings(closeModal: boolean | MouseEvent = true) {
   const shouldClose = typeof closeModal === "boolean" ? closeModal : true;
   const isDark = terminalSettings.value.term_bg_mode === "dark";
-  const bgCol = isDark ? "#0A0B0E" : "#F4F5F7";
+  // 配色主题（solarized / dracula / nord…）会把终端底色写进 terminal_bg_color，
+  // 这里不能再按明暗硬编码，否则主题的终端配色永远被覆盖成默认黑白。
+  const defaultBg = isDark ? "#0A0B0E" : "#F4F5F7";
+  const bgCol = (terminalSettings.value.terminal_bg_color || "").trim() || defaultBg;
   const hasBgImage = !!terminalBgImageData.value;
   const fgCol = hasBgImage
     ? terminalSettings.value.terminal_fg_color || (isDark ? "#81C995" : "#111318")
@@ -5202,7 +5366,10 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
   }
 
   const isDark = terminalSettings.value.term_bg_mode === "dark";
-  const bgCol = isDark ? "#0A0B0E" : "#F4F5F7";
+  // 配色主题（solarized / dracula / nord…）会把终端底色写进 terminal_bg_color，
+  // 这里不能再按明暗硬编码，否则主题的终端配色永远被覆盖成默认黑白。
+  const defaultBg = isDark ? "#0A0B0E" : "#F4F5F7";
+  const bgCol = (terminalSettings.value.terminal_bg_color || "").trim() || defaultBg;
   const hasBgImage = !!terminalBgImageData.value;
   const fgCol = hasBgImage
     ? terminalSettings.value.terminal_fg_color || (isDark ? "#81C995" : "#111318")
@@ -5896,6 +6063,7 @@ function switchSession(sid: string) {
 function closeSession(tab: SessionTab) {
   if (tab.is_locked) return; // 锁定状态禁止关闭
   clearPaneOfSession(tab.id);
+  removeBroadcastTarget(tab.id);
   tab.closingByUser = true;
   tab.intentionalExit = true;
   cancelAutoReconnect(tab);
@@ -6224,6 +6392,7 @@ async function fetchSftpFiles(path: string, expectedSessionId = activeSessionId.
         });
     if (!stillCurrent()) return;
     currentSftpPath.value = path;
+    rememberSftpPathFor(sessionId, path);
     sftpFiles.value = sortSftpList(list);
     selectedSftpFiles.value = [];
     selectedSftpFile.value = null;
@@ -6411,13 +6580,356 @@ function sftpCd(item: SftpFileItem) {
 
 const isSftpDragOver = ref(false);
 
-async function remotePathExists(remotePath: string): Promise<boolean> {
-  if (!activeSessionId.value) return false;
+// ===== 终端拖拽上传：本地文件/目录拖进某个窗格，直接传到该窗格的会话 =====
+
+/** 会话是否具备文件传输能力（SFTP / FTP），判定规则与右侧文件面板保持一致 */
+function tabSupportsFiles(tab: SessionTab | null | undefined): boolean {
+  if (!tab) return false;
+  const proto = tab.fileProtocol ?? (tab.host?.protocol === "ssh" || !tab.host?.protocol ? "sftp" : "none");
+  return proto === "sftp" || proto === "ftp";
+}
+
+function tabIsFtp(tab: SessionTab): boolean {
+  const proto = tab.fileProtocol ?? (tab.host?.protocol === "ftp" ? "ftp" : "none");
+  return proto === "ftp";
+}
+
+async function remotePathExistsFor(sessionId: string, remotePath: string): Promise<boolean> {
+  if (!sessionId || !remotePath) return false;
   try {
-    await invoke("sftp_stat", { sessionId: activeSessionId.value, remotePath });
+    await invoke("sftp_stat", { sessionId, remotePath });
     return true;
   } catch {
     return false;
+  }
+}
+
+async function remotePathExists(remotePath: string): Promise<boolean> {
+  return remotePathExistsFor(activeSessionId.value, remotePath);
+}
+
+/** FTP 没有 stat 接口，只能列父目录比对名字 */
+async function ftpRemoteEntryExists(sessionId: string, remotePath: string): Promise<boolean> {
+  const idx = remotePath.lastIndexOf("/");
+  const dir = idx <= 0 ? "/" : remotePath.slice(0, idx);
+  const fname = remotePath.slice(idx + 1);
+  if (!fname) return false;
+  try {
+    const list = await invoke<Array<{ name: string }>>("ftp_list", { sessionId, path: dir });
+    return list.some(f => f.name === fname);
+  } catch {
+    // 列目录失败时按「已存在」处理：宁可多问一次冲突，也不能静默覆盖远端文件
+    return true;
+  }
+}
+
+/** 远端同名判断：SSH 走 sftp_stat，FTP 走列目录 */
+async function remoteEntryExistsFor(tab: SessionTab, remotePath: string): Promise<boolean> {
+  if (tabIsFtp(tab)) return ftpRemoteEntryExists(tab.id, remotePath);
+  return remotePathExistsFor(tab.id, remotePath);
+}
+
+/** 远端路径一律用 /，目录补斜杠后拼接名字 */
+function joinRemotePath(dir: string, name: string): string {
+  const base = !dir ? "/" : dir.endsWith("/") ? dir : dir + "/";
+  return base + name;
+}
+
+/**
+ * 后端没有单独判断本地路径是否为目录的命令；list_local_dir 遇到文件会直接报错，
+ * 拿它做判断可以避免为一处调用改动 Rust。目录通常只在拖拽时才判定一次。
+ */
+async function isLocalDirectory(path: string): Promise<boolean> {
+  try {
+    await invoke("list_local_dir", { path });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** 拖拽落点提示：可见窗格中命中的那个会话（或空窗格） */
+const dropUploadTarget = ref<{
+  sid: string;
+  area: string;
+  name: string;
+  dir: string;
+  count: number;
+  blocked: boolean;
+  reason: "empty" | "unsupported" | "";
+} | null>(null);
+// enter 事件才带 paths，over 只带坐标，所以数量在 enter 时先记下
+let dropUploadCount = 0;
+
+function clearDropUploadTarget() {
+  if (dropUploadTarget.value) dropUploadTarget.value = null;
+  dropUploadCount = 0;
+}
+
+/** 拖放坐标是物理像素，getBoundingClientRect 用的是 CSS 像素 */
+/**
+ * 按矩形命中窗格。延迟/断开浮层与空窗格遮罩都压在窗格上方，
+ * elementFromPoint 会先命中它们，所以这里直接比较各窗格的几何区域。
+ */
+function paneSlotAtPoint(x: number, y: number): SessionTab | null {
+  const boxes = document.querySelectorAll<HTMLElement>(".pane-grid .pane-slot-box:not(.pane-hidden)");
+  for (const box of boxes) {
+    const rect = box.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+    const sid = box.id.startsWith("term-") ? box.id.slice(5) : "";
+    const hit = sessions.value.find(s => s.id === sid);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
+ * 命中空窗格。空窗格用 v-show 渲染，display:none 的槽矩形为 0 会被跳过；
+ * 元素顺序与 paneKeys 一致，可直接按索引取回槽位算 gridArea。
+ */
+function emptySlotAtPoint(x: number, y: number): { pkey: string; area: string } | null {
+  const slots = document.querySelectorAll<HTMLElement>(".pane-grid .pane-empty-overlay");
+  for (let i = 0; i < slots.length; i++) {
+    const rect = slots[i].getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) continue;
+    const pkey = paneKeys.value[i];
+    if (!pkey) continue;
+    return { pkey, area: paneGridArea(pkey) };
+  }
+  return null;
+}
+
+function updateDropUploadTarget(position?: { x: number; y: number }) {
+  // 拖放坐标按约定是物理像素；万一某个环境给的是逻辑像素，
+  // 用原始值再试一次，避免高 DPI 下整体偏移一个窗格。
+  const dpr = window.devicePixelRatio || 1;
+  const candidates: Array<{ x: number; y: number }> = [];
+  if (position) {
+    candidates.push({ x: position.x / dpr, y: position.y / dpr });
+    if (Math.abs(dpr - 1) > 0.01) candidates.push({ x: position.x, y: position.y });
+  }
+
+  let tab: SessionTab | null = null;
+  let empty: { pkey: string; area: string } | null = null;
+  for (const pt of candidates) {
+    tab = paneSlotAtPoint(pt.x, pt.y);
+    if (tab) break;
+    empty = emptySlotAtPoint(pt.x, pt.y);
+    if (empty) break;
+  }
+
+  const current = dropUploadTarget.value;
+  if (!tab && !empty) {
+    clearDropUploadTarget();
+    return;
+  }
+  if (!tab && empty) {
+    if (current && current.sid === "" && current.area === empty.area
+        && current.count === dropUploadCount) {
+      return;
+    }
+    dropUploadTarget.value = {
+      sid: "", area: empty.area, name: "空屏", dir: "", count: dropUploadCount,
+      blocked: true, reason: "empty",
+    };
+    return;
+  }
+  if (!tab) return;
+  const pkey = paneKeyOfSession(tab.id);
+  const area = pkey ? paneGridArea(pkey) : "1 / 1 / 2 / 2";
+  const blocked = !tab.alive || !tabSupportsFiles(tab);
+  const reason: "empty" | "unsupported" | "" = blocked ? "unsupported" : "";
+  const dir = sftpPathBySession.value[tab.id] || "会话默认目录";
+  // over 事件频率很高，目标没变化就不触发重新渲染
+  if (current && current.sid === tab.id && current.area === area
+      && current.blocked === blocked && current.dir === dir && current.count === dropUploadCount) {
+    return;
+  }
+  dropUploadTarget.value = {
+    sid: tab.id, area, name: tab.name, dir, count: dropUploadCount, blocked, reason,
+  };
+}
+
+/** 会话的上传目标目录：优先用该会话上次浏览过的目录，其次取远端 home */
+async function resolveSessionRemoteDir(tab: SessionTab): Promise<string> {
+  const remembered = sftpPathBySession.value[tab.id];
+  if (remembered) return remembered;
+  if (tabIsFtp(tab)) return "/";
+  try {
+    const home = await invoke<string>("sftp_home_dir", { sessionId: tab.id });
+    const dir = home || "/";
+    rememberSftpPathFor(tab.id, dir);
+    return dir;
+  } catch {
+    return "/";
+  }
+}
+
+function revealTransferMonitor() {
+  showTransferMonitor.value = true;
+  nextTick(() => {
+    const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
+    const offset = computeArrowOffset(btn, transferPopoverEl.value);
+    if (offset !== null) transferPopoverTargetRight.value = offset;
+  });
+}
+
+function markTransferFailed(taskId: string, raw: string) {
+  const task = activeTransfers.value.find(t => t.task_id === taskId);
+  if (!task) return;
+  task.status = "failed";
+  task.speed_bps = 0;
+  task.error = /permission denied|permission|权限/i.test(raw)
+    ? "目标目录没有写入权限，请切换到用户 home 或其他可写目录"
+    : raw;
+}
+
+/** 非活动会话没有 sftpFiles 缓存可用，只能逐个向远端确认候选名 */
+async function availableRemoteNameFor(tab: SessionTab, name: string, dir: string): Promise<string> {
+  const taken = tab.id === activeSessionId.value
+    ? new Set(sftpFiles.value.map(f => f.name))
+    : new Set<string>();
+  if (!taken.has(name) && !(await remoteEntryExistsFor(tab, dir + name))) return name;
+  const { base: stem, ext } = splitFileName(name);
+  for (let i = 1; i < 1000; i++) {
+    const candidate = `${stem} (${i})${ext}`;
+    if (taken.has(candidate)) continue;
+    if (!(await remoteEntryExistsFor(tab, dir + candidate))) return candidate;
+  }
+  return `${stem} (${Date.now()})${ext}`;
+}
+
+/** 单文件上传到指定会话的指定目录：冲突策略与文件面板上传完全一致 */
+async function uploadFileToSession(tab: SessionTab, localPath: string, dir: string) {
+  let fname = localPath.split(/[/\\]/).pop() || "upload_file";
+  let remotePath = joinRemotePath(dir, fname);
+  let overwrite = false;
+
+  if (await remoteEntryExistsFor(tab, remotePath)) {
+    const choice = await askTransferConflict(
+      "远端文件已存在",
+      `目标目录已存在“${fname}”，请选择处理方式。`,
+      fname,
+    );
+    if (choice === "cancel" || choice === "skip") return;
+    if (choice === "rename") {
+      fname = await availableRemoteNameFor(tab, fname, dir.endsWith("/") ? dir : dir + "/");
+      remotePath = joinRemotePath(dir, fname);
+    } else {
+      // 只有用户明确选了「覆盖」才允许后端覆盖
+      overwrite = true;
+    }
+  }
+
+  const taskId = makeTaskId("up");
+  revealTransferMonitor();
+  activeTransfers.value.push({
+    task_id: taskId,
+    filename: fname,
+    is_upload: true,
+    transferred: 0,
+    total: 100,
+    speed_bps: 0,
+    status: "running",
+  });
+
+  try {
+    if (tabIsFtp(tab)) {
+      const uploaded = await invoke<number>("ftp_upload", {
+        sessionId: tab.id,
+        remotePath,
+        localPath,
+      });
+      const task = activeTransfers.value.find(t => t.task_id === taskId);
+      if (task) {
+        task.transferred = uploaded;
+        task.total = uploaded || task.total;
+        task.status = "completed";
+        task.speed_bps = 0;
+      }
+    } else {
+      await invoke("sftp_upload_file", {
+        sessionId: tab.id,
+        localPath,
+        remotePath,
+        taskId,
+        overwrite,
+      });
+    }
+  } catch (error: any) {
+    console.error("[drop-upload] 文件上传失败:", error);
+    markTransferFailed(taskId, String(error?.message || error || "上传失败"));
+  }
+}
+
+/** 目录上传：复用现有「目录同步」，远端同名目录先问一次，避免静默合并 */
+async function uploadDirectoryToSession(tab: SessionTab, localDir: string, dir: string) {
+  const dirName = localDir.split(/[/\\]/).filter(Boolean).pop() || "upload_dir";
+  if (tabIsFtp(tab)) {
+    // FTP 后端只有单文件上传接口，没有递归目录同步，明确告知而不是假装在传
+    activeTransfers.value.push({
+      task_id: makeTaskId("up"),
+      filename: dirName,
+      is_upload: true,
+      transferred: 0,
+      total: 0,
+      speed_bps: 0,
+      status: "failed",
+      error: "FTP 会话暂不支持拖拽上传文件夹，请逐个拖入文件",
+    });
+    revealTransferMonitor();
+    return;
+  }
+  if (await remotePathExistsFor(tab.id, joinRemotePath(dir, dirName))) {
+    const choice = await askTransferConflict(
+      "远端目录已存在",
+      `目标目录已存在“${dirName}”。选择“覆盖”会把本地文件合并进去并覆盖同名文件。`,
+      dirName,
+    );
+    if (choice === "cancel" || choice === "skip") return;
+    // 「重命名」对目录同步没有意义（后端按本地目录名建子目录），按合并处理
+  }
+  const taskId = makeTaskId("up");
+  revealTransferMonitor();
+  try {
+    await invoke("sftp_sync_directory", {
+      sessionId: tab.id,
+      localDir,
+      remoteDir: dir,
+      taskId,
+      skipExisting: true,
+    });
+  } catch (error: any) {
+    console.error("[drop-upload] 目录上传失败:", error);
+    activeTransfers.value.push({
+      task_id: taskId,
+      filename: dirName,
+      is_upload: true,
+      transferred: 0,
+      total: 0,
+      speed_bps: 0,
+      status: "failed",
+      error: String(error?.message || error || "目录上传失败"),
+    });
+  }
+}
+
+/** 拖放命中终端窗格后的上传入口：逐个处理，避免并发冲突弹窗互相取消 */
+async function handleTerminalDropUpload(tab: SessionTab, paths: string[]) {
+  if (!tab.alive || !tabSupportsFiles(tab)) return;
+  const dir = await resolveSessionRemoteDir(tab);
+  for (const p of paths) {
+    if (await isLocalDirectory(p)) {
+      await uploadDirectoryToSession(tab, p, dir);
+    } else {
+      await uploadFileToSession(tab, p, dir);
+    }
+  }
+  // 目标正好是面板正在浏览的会话时，刷新一次让新文件立刻可见
+  if (tab.id === activeSessionId.value && isRightPanelOpen.value && rightPanelTab.value === "sftp") {
+    void fetchSftpFiles(currentSftpPath.value);
   }
 }
 
@@ -6437,14 +6949,16 @@ function splitFileName(name: string): { base: string; ext: string } {
 
 async function availableRemoteName(name: string, dir: string): Promise<string> {
   const taken = new Set(sftpFiles.value.map(f => f.name));
-  if (!taken.has(name) && !(await remotePathExists(dir + name))) return name;
+  const sess = activeSession.value;
+  const exists = async (p: string) => (sess ? remoteEntryExistsFor(sess, p) : remotePathExists(p));
+  if (!taken.has(name) && !(await exists(dir + name))) return name;
   const { base: stem, ext } = splitFileName(name);
   for (let i = 1; i < 1000; i++) {
     const candidate = `${stem} (${i})${ext}`;
     if (taken.has(candidate)) continue;
     // 内存里的 sftpFiles 可能已过期（外部新建/读取失败），候选名必须再向远端确认一次，
     // 否则会把同一个名字传给后端，rename 时静默覆盖已有文件。
-    if (!(await remotePathExists(dir + candidate))) return candidate;
+    if (!(await exists(dir + candidate))) return candidate;
   }
   return `${stem} (${Date.now()})${ext}`;
 }
@@ -6468,7 +6982,8 @@ async function uploadLocalPath(localPath: string) {
   let remotePath = base + fname;
 
   let overwrite = false;
-  if (await remotePathExists(remotePath)) {
+  const uploadTab = activeSession.value;
+  if (uploadTab && (await remoteEntryExistsFor(uploadTab, remotePath))) {
     const choice = await askTransferConflict(
       "远端文件已存在",
       `当前目录已存在“${fname}”，请选择处理方式。`,
@@ -6487,8 +7002,12 @@ async function uploadLocalPath(localPath: string) {
 
   const taskId = makeTaskId("up");
 
-  transferPopoverTargetRight.value = 300;
   showTransferMonitor.value = true;
+  nextTick(() => {
+    const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
+    const offset = computeArrowOffset(btn, transferPopoverEl.value);
+    if (offset !== null) transferPopoverTargetRight.value = offset;
+  });
   activeTransfers.value.push({
     task_id: taskId,
     filename: fname,
@@ -6850,8 +7369,12 @@ async function sftpTriggerDownload(item: SftpFileItem): Promise<boolean> {
   const taskId = makeTaskId("down");
   const sessionId = activeSessionId.value;
 
-  transferPopoverTargetRight.value = 300;
   showTransferMonitor.value = true;
+  nextTick(() => {
+    const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
+    const offset = computeArrowOffset(btn, transferPopoverEl.value);
+    if (offset !== null) transferPopoverTargetRight.value = offset;
+  });
   activeTransfers.value.push({
     task_id: taskId,
     filename: item.name,
@@ -7649,18 +8172,36 @@ onMounted(async () => {
   // 监听 Tauri 原生拖拽文件到窗口释放事件
   if (appWindow) {
     await appWindow.onDragDropEvent((event) => {
-      if (event.payload.type === "over") {
-        if (rightPanelTab.value === "sftp" && canUseSftp.value) {
-          isSftpDragOver.value = true;
-        }
-      } else if (event.payload.type === "drop") {
+      const payload = event.payload;
+      if (payload.type === "enter") {
+        dropUploadCount = payload.paths?.length || 0;
+        updateDropUploadTarget(payload.position);
+        isSftpDragOver.value = !dropUploadTarget.value && rightPanelTab.value === "sftp" && canUseSftp.value;
+      } else if (payload.type === "over") {
+        updateDropUploadTarget(payload.position);
+        isSftpDragOver.value = !dropUploadTarget.value && rightPanelTab.value === "sftp" && canUseSftp.value;
+      } else if (payload.type === "drop") {
+        // 落点先按窗格判定：拖到哪一屏就传到哪一屏的会话，不再只能传给活动会话
+        updateDropUploadTarget(payload.position);
+        const target = dropUploadTarget.value;
+        clearDropUploadTarget();
         isSftpDragOver.value = false;
-        if (rightPanelTab.value === "sftp" && canUseSftp.value && event.payload.paths) {
-          event.payload.paths.forEach((p: string) => {
+        if (target) {
+          // 命中窗格但该会话不支持文件传输、或落在空窗格时保持静默，
+          // 不回退到面板，避免把文件传到别的会话上去
+          const tab = sessions.value.find(s => s.id === target.sid);
+          if (!target.blocked && tab && payload.paths?.length) {
+            void handleTerminalDropUpload(tab, payload.paths);
+          }
+          return;
+        }
+        if (rightPanelTab.value === "sftp" && canUseSftp.value && payload.paths) {
+          payload.paths.forEach((p: string) => {
             uploadLocalPath(p);
           });
         }
       } else {
+        clearDropUploadTarget();
         isSftpDragOver.value = false;
       }
     });
@@ -8194,7 +8735,7 @@ onUnmounted(() => {
           </div>
 
           <div 
-            :class="['terminal-viewport', commandPalette.open ? 'palette-open' : '']"
+            :class="['terminal-viewport', commandPalette.open ? 'palette-open' : '', showBroadcastPanel ? 'bp-open' : '']"
             @contextmenu.prevent="openContextMenu($event, 'terminal')"
           >
             <!-- 快速命令面板：底部手柄 + 向上展开的命令搜索 -->
@@ -8230,6 +8771,15 @@ onUnmounted(() => {
                 <div class="grid-v-line"></div>
                 <div class="grid-h-line"></div>
               </div>
+              <DropUploadOverlay
+                :visible="!!dropUploadTarget"
+                :area="dropUploadTarget?.area || '1 / 1 / 2 / 2'"
+                :session-name="dropUploadTarget?.name || ''"
+                :dir="dropUploadTarget?.dir || ''"
+                :count="dropUploadTarget?.count || 0"
+                :blocked="dropUploadTarget?.blocked || false"
+                :reason="dropUploadTarget?.reason || ''"
+              />
               <div
                 v-for="tab in sessions"
                 :key="tab.id"
@@ -8318,6 +8868,55 @@ onUnmounted(() => {
                 >✕</button>
               </div>
             </div>
+
+          <!-- 广播台：与命令面板同构的底部抽屉（原型：仅界面与选择，不下发命令） -->
+          <div :class="['broadcast-panel', showBroadcastPanel ? 'is-open' : '']" @contextmenu.prevent.stop>
+            <div class="bp-head">
+              <span class="bp-title">广播台</span>
+              <span class="bp-candidates">{{ broadcastCandidates.length }} 台在线</span>
+              <span class="bp-spacer"></span>
+              <button class="qp-toggle-btn" @click="selectAllBroadcastTargets">全选已连接</button>
+              <button class="qp-toggle-btn" @click="clearBroadcastTargets">全不选</button>
+              <button class="qp-toggle-btn bp-close" title="收起广播台" @click="showBroadcastPanel = false">✕</button>
+            </div>
+            <!-- 主机按 2×2 排布，超过 4 台在网格内滚动 -->
+            <div class="bp-targets">
+              <div
+                v-for="tab in broadcastCandidates"
+                :key="tab.id"
+                :class="['bp-target', broadcastSelected.includes(tab.id) ? 'is-on' : '']"
+                @click="toggleBroadcastTarget(tab.id)"
+              >
+                <span class="bp-check">{{ broadcastSelected.includes(tab.id) ? '✓' : '' }}</span>
+                <i class="bp-dot" :style="{ background: broadcastPaneColor(tab.id) }"></i>
+                <span class="bp-name">{{ tab.name }}</span>
+                <span class="bp-pane" v-if="broadcastPaneLabel(tab.id)">{{ broadcastPaneLabel(tab.id) }}</span>
+                <span class="bp-addr">{{ tab.host?.host }}:{{ tab.host?.port }}</span>
+              </div>
+              <div v-if="broadcastCandidates.length === 0" class="bp-empty">
+                还没有已连接的会话，连上主机后这里会列出来
+              </div>
+            </div>
+            <div class="bp-compose">
+              <textarea
+                v-model="broadcastInput"
+                class="bp-input"
+                rows="2"
+                spellcheck="false"
+                placeholder="输入要群发的命令：Enter 发送，Shift+Enter 换行"
+                @keydown.enter.exact.prevent="sendBroadcast"
+              ></textarea>
+              <div class="bp-actions">
+                <span class="bp-count">已选 {{ broadcastSelectedCount }} 台</span>
+                <span v-if="broadcastHint" class="bp-hint">{{ broadcastHint }}</span>
+                <button
+                  class="qp-toggle-btn bp-send"
+                  :disabled="broadcastSending || broadcastSelectedCount === 0 || !broadcastInput.trim()"
+                  @click="sendBroadcast"
+                >{{ broadcastSending ? "发送中…" : "发送" }}</button>
+              </div>
+            </div>
+          </div>
           </div>
   <div class="terminal-status-bar">
   <span class="status-session">
@@ -8327,6 +8926,15 @@ onUnmounted(() => {
   <span v-if="paneLayout > 1" class="status-pane-tag">{{ paneLayout }} 屏</span>
   <span v-if="activePaneLabel()" class="status-pane-name">{{ activePaneLabel() }}</span>
   <span class="status-spacer"></span>
+  <button
+    :class="['status-cmd-btn', 'status-bc-btn', broadcastSelectedCount > 0 ? 'is-live' : '']"
+    @click="toggleBroadcastPanel"
+    title="广播台：勾选多台会话后群发命令"
+  >
+  <span class="status-bc-icon"><Icons name="broadcast" size="13" /></span>
+  <span class="status-bc-label">广播</span>
+  <span v-if="broadcastSelectedCount > 0" class="status-bc-count">{{ broadcastSelectedCount }}</span>
+  </button>
   <button class="status-cmd-btn" @click="toggleCommandPalette" title="命令面板 (Ctrl+K)">
   ⌘ 命令面板
   </button>
@@ -8605,6 +9213,8 @@ onUnmounted(() => {
       </div>
 
       <!-- 视图 2：主机管理大盘视图 (120帧流光条 + 流量统计/校准交互) -->
+      <!-- Transition 负责「离开动画播完再 display:none」，抽屉滑出才不会瞬间消失 -->
+      <Transition name="view-slide">
       <div v-show="currentView === 'mgmt'" class="mgmt-view">
         <div class="mgmt-header">
           <div>
@@ -8728,6 +9338,7 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
+      </Transition>
     </div>
 
     <!-- 告警与事件提醒下拉卡片 (NotificationMonitorPopover 1:1 对标 ssh8.py) -->
@@ -8735,7 +9346,8 @@ onUnmounted(() => {
     <div 
       v-if="showAlertPopover" 
       class="transfer-monitor-popover alert-popover" 
-      :style="{ '--arrow-right': (alertPopoverTargetRight - 8) + 'px' }"
+      ref="alertPopoverEl"
+      :style="{ '--arrow-right': (alertPopoverTargetRight - 8) + 'px', '--popover-left': alertPopoverLeft + 'px' }"
     >
               <div class="transfer-popover-header alert-head">
                 <span class="alert-head-title">告警与事件</span>
@@ -8749,8 +9361,8 @@ onUnmounted(() => {
                     @click="alertPopoverTab = 'events'"
                   >事件 {{ sessionEvents.length }}</button>
                   <button
-                    v-if="alertPopoverTab === 'hosts' && hostAlertList.length > 0"
                     class="btn-popover-ignore"
+                    :disabled="alertPopoverTab !== 'hosts' || hostAlertList.length === 0"
                     @click="clearAllAlerts"
                   >
                     忽略
@@ -8818,6 +9430,7 @@ onUnmounted(() => {
       v-if="showTransferMonitor" 
       class="transfer-monitor-popover" 
       :style="{ '--arrow-right': (transferPopoverTargetRight - 8) + 'px' }"
+      ref="transferPopoverEl"
     >
       <div class="transfer-popover-header">
         <span>SFTP 传输监视队列 ({{ activeTransfers.length }})</span>

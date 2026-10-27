@@ -95,6 +95,14 @@
     </g>
   </svg>
 
+  <!-- 10.1 广播/群发图标 (双向右箭头：箭头头部放大到 4.3×7.2，13px 下也看得清方向) -->
+  <svg v-else-if="name === 'broadcast'" :width="size || 14" :height="size || 14" viewBox="0 0 24 24" fill="none" class="v-icon">
+    <path d="M6 8.2h10.2" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+    <path d="m13.1 4.6 4.3 3.6-4.3 3.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M6 15.8h10.2" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"/>
+    <path d="m13.1 12.2 4.3 3.6-4.3 3.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
   <!-- 11. 侧边栏折叠/展开图标 (2.1px 饱满线宽 + 居中外框) -->
   <svg v-else-if="name === 'panel'" :width="size" :height="size" viewBox="0 0 24 24" fill="none" class="v-icon icon-collapse">
     <rect x="5" y="5" width="14" height="14" rx="2.5" stroke="currentColor" stroke-width="2.1"/>
@@ -188,7 +196,7 @@
 
 <script setup lang="ts">
 defineProps<{
-  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin" | "split";
+  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin" | "split" | "broadcast";
   size?: number | string;
   expanded?: boolean;
 }>();
