@@ -6,7 +6,7 @@
 
 - 路径：`C:\Users\a6704\Desktop\SSH`（仓库根），应用在 `QShell-WinUI3/`
 - 技术栈：Tauri 2 + Rust + Vue 3 + xterm.js，Windows 10/11
-- 当前版本：**0.99.85**（已发布）
+- 当前版本：**0.99.86**（已发布）
 - 前端：`src/App.vue`（约 8500 行，单体）、`src/components/`（12 个组件）、`src/styles/app.css`（约 8900 行）
 - 后端：`src-tauri/src/`（ssh/sftp/ftp/monitor/traffic/port_forward/trace_route 等）
 
@@ -48,7 +48,7 @@ node .\node_modules\@tauri-apps\cli\tauri.js build --bundles nsis
 | 快速命令面板（抽屉式推拉） | ✅ |
 | 系统监控 / 流量审计 / 到期提醒 / 路由追踪 | ✅ |
 | 会话恢复 / 断线重连 / 命令历史 | ✅ |
-| 拖拽上传（拖到哪个窗格传到哪个会话） | ✅ 待回归验证 |
+| 拖拽上传（拖到哪个窗格传到哪个会话） | ✅ |
 
 ## 分屏架构（易错点）
 
@@ -85,7 +85,6 @@ paneKeys           // computed：当前布局的合法槽位
 
 仍存在的：
 
-- 广播输入面板未实现
 - 按钮精简未做
 - xterm 历史 reflow 导致分屏后旧内容「挤压」（库特性，不处理）
 
@@ -100,6 +99,8 @@ BUGS.md 中原标记「待修复」的 BUG-061 / 062 / 063 / 065 已由用户确
 - 提示层：新组件 `src/components/DropUploadOverlay.vue`，作为 `.pane-grid` 的 grid 子项，用 `gridArea` 与目标窗格对齐，`pointer-events: none`。
 
 ## 已解决（2026-10-27 晚）
+
+- 广播台（多会话群发命令，底部抽屉，v0.99.86 已发版）
 
 - 通知气泡三角：气泡改为跟随按钮定位（--popover-left），三角实测对齐
 - 告警头部按钮组：改为靠右（space-between + margin-left:auto）
