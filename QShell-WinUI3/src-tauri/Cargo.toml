@@ -1,6 +1,6 @@
 [package]
 name = "qshell"
-version = "0.99.85"
+version = "0.99.86"
 edition = "2024"
 
 [[bin]]

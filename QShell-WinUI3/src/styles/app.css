@@ -583,19 +583,14 @@ html.window-resizing .workspace-layout {
   height: 100%;
   position: relative;
   min-width: 0;
-  transition: opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.22s cubic-bezier(0.16, 1, 0.3, 1);
   transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
-/* 隐藏时保持原位与几何尺寸不变，杜绝 xterm 字符度量与行宽归零 */
+/* 切到主机管理时主页面只「让位」：保持原位与几何尺寸不变（xterm 度量不归零），
+   由上半层的 .mgmt-view 盖住。
+   这里刻意不做位移 —— 两个视图同时反向运动会互相打架，观感像回弹。 */
 .workspace-layout.view-hidden {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  right: 10px;
-  bottom: 10px;
-  opacity: 0;
-  transform: translateY(-8px) translateZ(0);
   pointer-events: none;
   z-index: 0;
 }
@@ -917,9 +912,10 @@ html.window-resizing .workspace-layout {
 .net-if-badge.idle .if-text {
   color: #94A3B8;
 }
+/* 闲置态是中性状态，用主题变量，避免在暖色主题里出现冷灰蓝 */
 [data-theme="light"] .net-if-badge.idle {
-  background: #F1F5F9;
-  border-color: #CBD5E1;
+  background: var(--bg-sub-card);
+  border-color: var(--border-capsule);
 }
 [data-theme="light"] .net-if-badge.idle .if-dot,
 [data-theme="light"] .net-if-badge.idle .if-text {
@@ -1150,7 +1146,8 @@ html.window-resizing .workspace-layout {
 
 /* SVG 几何灯珠 - 统一 6×6 正方形，描边用卡片底色形成清晰的"框" */
 .svg-led {
-  fill: #2A2F3A;
+  /* 未点亮灯珠用主题的轨道色，换配色主题时跟着变（原来是写死的冷灰蓝） */
+  fill: var(--bg-track);
   opacity: 0.85;
   stroke: var(--bg-card);
   stroke-width: 1;
@@ -1158,7 +1155,7 @@ html.window-resizing .workspace-layout {
 }
 
 [data-theme="light"] .svg-led {
-  fill: #DCE3EE;
+  fill: var(--bg-track);
   opacity: 0.85;
 }
 
@@ -1513,16 +1510,8 @@ html.window-resizing .workspace-layout {
   user-select: none;
 }
 
-[data-theme="light"] .term-tab {
-  background: #DFE5EE;
-  border: 1px solid #D2D8E4;
-  color: #1A1C1E;
-}
-
-[data-theme="light"] .term-tab:hover {
-  background: #D5DDE8;
-  border-color: #CBD5E1;
-}
+/* 未选中标签：基类已用 --bg-capsule / --border-capsule，
+   这里不要再写死浅色（写死会在换配色主题时变成冷灰蓝，和暖色主题打架）。 */
 
 .term-tab.active {
   background: var(--color-primary) !important;
@@ -2924,26 +2913,32 @@ html.window-resizing .workspace-layout {
   transform: translateY(1px);
 }
 
-/* 视图 2：主机管理大盘 (平滑推进淡入) */
+/* 视图 2：主机管理大盘（覆盖在主页面之上，自身不参与 flex 布局） */
 .mgmt-view {
-  flex: 1;
+  /* inset 与 .main-body 的 padding 对齐，保持原有的内容区边界 */
+  position: absolute;
+  inset: 10px;
   overflow-y: auto;
   padding: 24px;
-  background: transparent;
-  position: relative;
+  background: var(--bg-app);
   z-index: 1;
-  animation: view-flow-enter 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: transform;
 }
 
-@keyframes view-flow-enter {
-  from {
-    opacity: 0;
-    transform: translateY(8px) translateZ(0);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) translateZ(0);
-  }
+/* 抽屉滑动：只有上面这一层（管理页）在动，主页面停在原位。
+   打开：-100% → 0，从上往下拉下来；
+   收起：0 → -100%，沿原路推回去（主页面从底部逐渐露出）。
+   原路往返，方向一致，不会像两层反向运动那样出现回弹。
+   多留 20px 是因为 overflow 裁剪的是 padding box，正好 -100% 会停在内容区顶边、
+   在 main-body 的 10px 内边距里露出一条残影。 */
+.view-slide-enter-active,
+.view-slide-leave-active {
+  transition: transform 0.24s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+.view-slide-enter-from,
+.view-slide-leave-to {
+  transform: translate3d(0, calc(-100% - 20px), 0);
 }
 
 .mgmt-header {
@@ -3115,7 +3110,7 @@ html.window-resizing .workspace-layout {
 }
 
 [data-theme="light"] .host-card:hover {
-  border-color: #85858E;
+  border-color: var(--border-input);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.09);
 }
 
@@ -3273,23 +3268,23 @@ html.window-resizing .workspace-layout {
   background: rgba(56, 189, 248, 0.25);
 }
 
-/* 日间模式：精细微立体胶囊按钮，深蓝字样与微描边，杜绝发虚并与卡片整体质感呼应 */
+/* 日间模式：底色/描边交给主题变量，文字保持主色系（原来写死冷蓝，换主题会跳） */
 [data-theme="light"] .traffic-audit-btn {
-  background: #EFF6FF;
-  border-color: #BFDBFE;
-  color: #1D4ED8;
+  background: var(--bg-capsule);
+  border-color: var(--border-capsule);
+  color: var(--color-primary);
   box-shadow: 0 1px 2px rgba(29, 78, 216, 0.06);
 }
 
 [data-theme="light"] .traffic-audit-btn:hover {
-  background: #DBEAFE;
-  border-color: #93C5FD;
-  color: #1E40AF;
+  background: var(--bg-capsule-hover);
+  border-color: var(--color-primary);
+  color: var(--color-primary);
   box-shadow: 0 2px 4px rgba(29, 78, 216, 0.12);
 }
 
 [data-theme="light"] .traffic-audit-btn:active {
-  background: #BFDBFE;
+  background: var(--bg-capsule-hover);
 }
 
 .card-latency.is-tcp {
@@ -3412,10 +3407,10 @@ html.window-resizing .workspace-layout {
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
-/* 日间模式：内嵌式微凹灰底槽，搭配雅致中性斜纹流动，色彩沉稳且不与白卡片突兀冲撞 */
+/* 日间模式：内嵌式微凹底槽，用主题轨道色（写死冷灰会在暖色主题里发蓝） */
 [data-theme="light"] .unified-traffic-bar.infinite {
-  background: #E8E8ED;
-  border-color: #D2D2D8;
+  background: var(--bg-track);
+  border-color: var(--border-card);
   box-shadow: inset 0 1px 2.5px rgba(0, 0, 0, 0.08);
 }
 
@@ -3579,9 +3574,10 @@ html.window-resizing .workspace-layout {
   gap: 12px;
 }
 
+/* 表单区块底色跟随主题变量，别再写死冷灰蓝（换暖色主题会明显不搭） */
 [data-theme="light"] .form-section-card {
-  background: #F8F9FC;
-  border-color: #E2E4E9;
+  background: var(--bg-sub-card);
+  border-color: var(--border-card);
 }
 
 .modal-section-title {
@@ -4148,8 +4144,8 @@ html.window-resizing .workspace-layout {
 }
 
 [data-theme="light"] .combo-baud-option:hover {
-  background: #EFF6FF;
-  color: #1A56DB;
+  background: var(--bg-capsule);
+  color: var(--text-main);
 }
 
 .combo-baud-option.active {
@@ -5171,18 +5167,9 @@ input.modal-input[type="number"]:not(.spin-input) {
   user-select: none;
 }
 
-[data-theme="light"] .alert-card-item {
-  background: #FAFAFC;
-  border: 1px solid #D2D8E4;
-}
-
+/* 告警条目：同样交给 --bg-capsule / --border-capsule，不再写死浅色内框 */
 .alert-card-item:hover {
   background: var(--bg-capsule-hover);
-  border-color: var(--color-primary);
-}
-
-[data-theme="light"] .alert-card-item:hover {
-  background: #EDEFF4;
   border-color: var(--color-primary);
 }
 
@@ -5367,7 +5354,7 @@ div.terminal-mount-box .xterm .xterm-scrollable-element > .scrollbar > .slider.a
 }
 
 [data-theme="light"] .font-item-row.active {
-  background: rgba(26, 86, 219, 0.1);
+  background: var(--bg-capsule);
   border-color: var(--color-primary);
 }
 
@@ -7121,15 +7108,11 @@ body,
   max-height: 260px;
   overflow-y: auto;
 }
-/* 面板配色：跟终端色调一致（深色主题） */
+/* 面板配色交给主题变量（--bg-card / --border-card），
+   这里不要再写死色值：写死会在切换「配色主题」时与其它界面不搭。 */
 .quick-palette {
-  background: #10141a !important;
-  border-top: 1px solid rgba(255, 255, 255, 0.05) !important;
-}
-
-[data-theme="light"] .quick-palette {
-  background: #f4f6f9 !important;
-  border-top: 1px solid rgba(0, 0, 0, 0.06) !important;
+  background: var(--bg-card) !important;
+  border-top: none !important;
 }
 /* 触发区缩窄：只有胶囊手柄区域触发展开 */
 .quick-palette-dock {
@@ -7170,7 +7153,7 @@ body,
 }
 
 [data-theme="light"] .qp-item.active {
-  background: rgba(20, 110, 160, 0.14);
+  background: var(--bg-capsule);
 }
 
 .qp-item:hover:not(.active) {
@@ -8621,9 +8604,10 @@ body,
 .pane-empty-overlay::after {
   display: none !important;
 }
-/* 竖线底部多延伸 2px，补齐与状态栏之间的 1~2px 缝隙 */
+/* 分割线不再向下延伸：bottom:-2px 会让竖线探进状态栏边框 2px，
+   在交叉处出现一个小凸点（亮/暗都会看到）。几何上已无缝隙，归零即可。 */
 .pane-grid-lines {
-  bottom: -2px !important;
+  bottom: 0 !important;
 }
 /* ===== 命令面板：复用主框体边框，去圆角 ===== */
 .quick-palette {
@@ -8633,4 +8617,502 @@ body,
   border-bottom: none !important;
   left: 0 !important;
   right: 0 !important;
+}
+/* 忽略按钮：尺寸与页签按钮统一，禁用时保持占位 */
+.btn-popover-ignore {
+  height: 26px !important;
+  padding: 0 12px !important;
+  border-radius: var(--radius-btn) !important;
+  font-size: 11px !important;
+  line-height: 1 !important;
+}
+
+.btn-popover-ignore:disabled {
+  background-color: transparent !important;
+  color: var(--text-sub) !important;
+  border-color: var(--border-card) !important;
+  opacity: 0.55;
+  cursor: default;
+}
+
+.alert-head-actions {
+  min-width: 268px;
+}
+/* ===== 视图切换动画（已改为轻量版：仅 opacity + 6px 位移，不再用 blur/scale） ===== */
+/* 旧实现对整个 workspace（含 xterm canvas）过渡 filter: blur(5px) + scale(0.985)，
+   会强制整层离屏重绘并重新栅格化文字，切换时明显掉帧，故移除。 */
+
+/* 主页面隐藏期间（主机管理页可见）暂停子树里的光标闪烁 / LED 等循环动画，
+   避免看不见的图层继续占用合成线程。只暂停不隐藏，布局与字符度量不受影响。 */
+.workspace-layout.view-hidden * {
+  animation-play-state: paused !important;
+}
+/* ===== 广播台：底部抽屉 ===== */
+/* 与命令面板（.quick-palette 最终的 7152 那条规则）完全对齐：
+   底色用 --bg-card，顶部一条 --border-card 的线 —— 那个颜色就是主框体边框本身的颜色，
+   所以看起来是主框体内部的一根线，而不是面板"额外"画的一条；
+   左右下都不画边框，由主框体提供。 */
+.broadcast-panel {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg-card);
+  /* 不画 border：border 即使透明也会占位，收起时会漏出几像素的面板底色（灰带）。
+     上下两条线改用 inset 阴影，画在盒子内壁，不参与布局。 */
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  /* 速率与命令面板完全相同：height 0.8s cubic-bezier(0.4,0,0.2,1) + opacity 0.6s */
+  transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease;
+}
+
+/* 固定高度 = 命令面板展开后的同一档，换面板时终端区高度不跳 */
+.broadcast-panel.is-open {
+  height: 340px;
+  max-height: 60vh;
+  opacity: 1;
+  pointer-events: auto;
+  /* 上内线 + 下内线（= 原来那条复用主框体颜色的线）；不投外阴影，和命令面板一致 */
+  box-shadow:
+    inset 0 1px 0 var(--border-card),
+    inset 0 -1px 0 var(--border-card);
+}
+
+/* 面板展开时让状态栏的顶线让位，否则面板底边 + 状态栏顶边会叠成 2px。
+   两者都由同一个 ref 驱动（is-open / bp-open），永远同帧切换，不会出现双线。 */
+.terminal-viewport.bp-open + .terminal-status-bar {
+  border-top-color: transparent;
+}
+
+/* ===== 命令面板：同一套内线机制（不用 border，避免收起时占位漏底色） ===== */
+.quick-palette {
+  border: none !important;
+  box-shadow: none !important;
+}
+
+.quick-palette.is-open {
+  box-shadow:
+    inset 0 1px 0 var(--border-card),
+    inset 0 -1px 0 var(--border-card) !important;
+}
+
+.terminal-viewport.palette-open + .terminal-status-bar {
+  border-top-color: transparent;
+}
+
+/* 两个抽屉一开一合同时进行：高度均为 340，任一时刻两者之和不变，
+   终端区高度保持恒定，切换看起来就是抽屉内容互相替换，不会割裂。 */
+
+.bp-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px 6px;
+  user-select: none;
+}
+
+.bp-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+/* 在线台数提示 */
+.bp-candidates {
+  font-size: 10px;
+  color: var(--text-sub);
+}
+
+.bp-spacer {
+  flex: 1;
+}
+
+/* 关闭按钮：沿用 .qp-toggle-btn 的外观，只把左右内边距收窄 */
+.bp-close {
+  padding: 0 9px !important;
+}
+
+/* 主机：2 列网格（2×2 为主），行高由面板剩余空间等分 —— 面板固定 340 高，
+   卡片随之变高，不会出现"面板很大、卡片很薄"的空旷感 */
+.bp-targets {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  gap: 8px;
+  overflow-y: auto;
+  padding: 0 12px 8px;
+}
+
+.bp-target {
+  display: grid;
+  grid-template-columns: 16px 6px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "check dot name pane"
+    "check dot addr addr";
+  align-content: center;
+  align-items: center;
+  row-gap: 3px;
+  column-gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: var(--bg-sub-card);
+  font-size: 11px;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.bp-target:hover {
+  border-color: var(--color-primary);
+}
+
+.bp-target.is-on {
+  border-color: var(--color-primary);
+  color: var(--text-main);
+}
+
+.bp-check {
+  grid-area: check;
+  align-self: center;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  border: 1px solid var(--border-card);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--color-primary);
+}
+
+.bp-target.is-on .bp-check {
+  border-color: var(--color-primary);
+  background: rgba(108, 182, 255, 0.16);
+}
+
+.bp-dot {
+  grid-area: dot;
+  align-self: center;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.bp-name {
+  grid-area: name;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-main);
+}
+
+.bp-addr {
+  grid-area: addr;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.bp-pane {
+  grid-area: pane;
+  align-self: center;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.bp-empty {
+  grid-column: 1 / -1;
+  padding: 8px;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.bp-compose {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 12px 10px;
+}
+
+.bp-input {
+  width: 100%;
+  height: 68px;
+  min-height: 68px;
+  max-height: 68px;
+  resize: none;
+  padding: 8px 10px;
+  border-radius: var(--radius-btn);
+  border: 1px solid var(--border-card);
+  background: var(--bg-app);
+  color: var(--text-main);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 12px;
+  outline: none;
+}
+
+.bp-input:focus {
+  border-color: var(--color-primary);
+}
+
+.bp-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+}
+
+.bp-count {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+/* 发送按钮同样是 .qp-toggle-btn 的外观，这里只负责靠右 */
+.bp-send {
+  margin-left: auto;
+}
+
+.bp-send:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.bp-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-primary);
+}
+
+/* 状态栏广播按钮：宽度随内容，图标用 SVG 走 flex 居中（不再用字符，避免基线错位） */
+.status-bc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 12px;
+  line-height: 1;
+}
+
+.status-bc-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.status-bc-label {
+  line-height: 1;
+}
+
+.status-bc-btn.is-live {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.status-bc-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-size: 10px;
+  line-height: 1;
+}
+/* 配色主题卡片：撑满整行后居中，避免因容器宽度收缩而贴左 */
+.theme-preset-block {
+  width: 100%;
+}
+
+.theme-preset-grid {
+  width: 100%;
+  justify-content: center;
+}
+/* 配色主题：改为等分网格，卡片撑满整行（彻底居中） */
+.theme-preset-grid {
+  display: grid !important;
+  grid-template-columns: repeat(5, minmax(0, 1fr)) !important;
+  gap: 8px !important;
+  width: 100% !important;
+}
+
+.theme-preset-btn {
+  width: 100% !important;
+  min-width: 0;
+  justify-content: center;
+  align-items: center;
+}
+/* 配色主题：标签与卡片分两列，卡片左缘与下方输入框对齐 */
+.theme-preset-block {
+  display: grid !important;
+  grid-template-columns: 100px 1fr;
+  gap: 12px;
+  align-items: start;
+  width: 100% !important;
+}
+
+.theme-preset-block .settings-form-label {
+  width: auto !important;
+  text-align: right !important;
+  padding-top: 6px;
+  align-self: auto !important;
+}
+
+.theme-preset-grid {
+  width: 100% !important;
+}
+/* 告警气泡跟随铃铛按钮定位，三角才能真正对准 */
+.alert-popover {
+  right: auto !important;
+  left: var(--popover-left, 15px) !important;
+}
+/* 告警气泡头部：标题靠左、按钮组靠右 */
+.alert-head {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 10px;
+}
+
+.alert-head-actions {
+  margin-left: auto !important;
+  min-width: 0 !important;
+}
+/* ===== 终端拖拽上传落点提示（覆盖在目标窗格上，不接收指针事件） ===== */
+.drop-upload-overlay {
+  position: relative;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px dashed rgba(108, 182, 255, 0.75);
+  background: rgba(108, 182, 255, 0.12);
+  pointer-events: none;
+}
+
+.drop-upload-overlay.is-blocked {
+  border-color: rgba(244, 135, 113, 0.75);
+  background: rgba(244, 135, 113, 0.1);
+}
+
+.drop-upload-card {
+  max-width: 88%;
+  padding: 10px 16px;
+  border-radius: 10px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-card);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.38);
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.duo-head {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.duo-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(108, 182, 255, 0.2);
+  color: #6cb6ff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.is-blocked .duo-icon {
+  background: rgba(244, 135, 113, 0.2);
+  color: #f48771;
+}
+
+.duo-title {
+  font-weight: 600;
+}
+
+.duo-session {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: var(--text-sub);
+}
+
+.duo-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6cb6ff;
+}
+
+.is-blocked .duo-dot {
+  background: #f48771;
+}
+
+.duo-name {
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.duo-dir {
+  max-width: 320px;
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.duo-count {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.duo-hint {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #f48771;
 }
