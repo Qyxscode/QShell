@@ -671,7 +671,7 @@ html.window-resizing .workspace-layout {
 [data-theme="light"] .win-btn:hover,
 [data-theme="light"] #snap-btn.is-hovered {
   background: rgba(0, 0, 0, 0.08);
-  color: #0F172A;
+  color: var(--text-main);
 }
 
 .win-btn.close:hover {
@@ -1832,7 +1832,7 @@ html.window-resizing .workspace-layout {
 
 /* 亮色模式适配 (Light Theme) */
 [data-theme="light"] .custom-tab-btn.btn-lock {
-  color: #55555A !important; /* 亮色非激活: text_muted */
+  color: var(--text-sub) !important; /* 亮色非激活: text_muted */
   opacity: 0.85 !important;
 }
 
@@ -3594,6 +3594,10 @@ html.window-resizing .workspace-layout {
 /* 无限流量流光条 (平滑无限循环、自适应日间/夜间配色) */
 .unified-traffic-bar.infinite {
   background: #181C26;
+  /* 用 flex 居中徽章：原来只写了 justify-content，但父级不是 flex，等于没生效，
+     加上 line-height:16px 让徽章比内容区(14px)高 2px，文字整体往下偏 */
+  display: flex;
+  align-items: center;
   justify-content: center;
   border-color: rgba(56, 189, 248, 0.25);
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.2);
@@ -3632,10 +3636,12 @@ html.window-resizing .workspace-layout {
   font-weight: 600;
   color: #38BDF8;
   letter-spacing: 0.5px;
-  line-height: 16px;
-  display: flex;
+  /* 不再用 16px 行高撑高（会溢出 14px 的内容区导致偏下），改为 flex 居中 */
+  line-height: 1;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 2px;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85);
 }
 
@@ -3657,7 +3663,7 @@ html.window-resizing .workspace-layout {
 }
 
 [data-theme="light"] .infinity-badge {
-  color: #3C4252;
+  color: var(--text-main);
   text-shadow: none;
   font-weight: 600;
 }
@@ -4533,7 +4539,7 @@ select option {
 
 [data-theme="light"] select option {
   background-color: #FFFFFF !important;
-  color: #0F172A !important;
+  color: var(--text-main) !important;
 }
 
 input[type="checkbox"] {
@@ -6395,24 +6401,34 @@ body,
   padding-top: 6px;
 }
 
-/* 折叠分组标题：增大点击区域与箭头 */
+/* 折叠分组标题：与普通分区标题同款「直线分隔」风格。
+   原来这里加了 border-radius + hover 整块背景，在通篇直线分割的弹窗里很突兀。 */
 .settings-group-toggle {
   cursor: pointer;
   user-select: none;
-  padding: 8px 4px;
-  margin: 10px 0 4px;
-  border-radius: 6px;
-  font-size: 13px;
+  border-radius: 0;
+  padding-top: 10px;
+  padding-bottom: 2px;
+  font-size: 12px;
+  color: var(--text-sub);
+  transition: color 0.15s ease;
 }
 
 .settings-group-toggle:hover {
-  background: var(--bg-capsule-hover);
+  background: transparent;
+  color: var(--text-main);
+}
+
+.settings-group-toggle:hover .settings-group-arrow {
+  color: var(--color-primary);
 }
 
 .settings-group-toggle .settings-group-arrow {
-  font-size: 14px;
-  padding: 0 6px;
+  font-size: 11px;
+  padding: 0;
   line-height: 1;
+  color: var(--text-sub);
+  transition: color 0.15s ease;
 }
 /* 背景图说明文字：独立一行，避免换行挤压其他行 */
 .bg-image-hint-line {
@@ -7712,6 +7728,11 @@ body,
 
 .theme-preset-name {
   font-weight: 500;
+  /* 名称必须单行：换行会把下面的色块挤下去，五张卡片高度就不齐了 */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .theme-preset-swatches {
@@ -9403,4 +9424,218 @@ body,
 .broadcast-panel,
 .broadcast-panel.is-open {
   transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+/* ===== 分屏可拖动分隔条 =====
+   行列比例由 JS 写到 CSS 变量（--pane-col / --pane-row），
+   这里用「百分比 + 剩余 1fr」组合，避免改动原有 grid-area 的写法。 */
+.pane-grid.layout-2 {
+  grid-template-columns: var(--pane-col, 50%) 1fr;
+  grid-template-rows: 1fr;
+}
+
+.pane-grid.layout-3,
+.pane-grid.layout-4 {
+  grid-template-columns: var(--pane-col, 50%) 1fr;
+  grid-template-rows: var(--pane-row, 50%) 1fr;
+}
+
+/* 分割线跟随比例移动 */
+.grid-v-line {
+  left: calc(var(--pane-col, 50%) - 0.5px);
+}
+
+.grid-h-line {
+  top: calc(var(--pane-row, 50%) - 0.5px);
+}
+
+/* 3 屏的横线只画在右半边（左列是整列） */
+.lines-3 .grid-h-line {
+  left: var(--pane-col, 50%);
+}
+
+.pane-splitter {
+  position: absolute;
+  z-index: 7;
+  background: transparent;
+  user-select: none;
+  touch-action: none;
+  transition: background-color 0.15s ease;
+}
+
+.pane-splitter.col {
+  top: 0;
+  bottom: 0;
+  width: 10px;
+  left: var(--pane-col, 50%);
+  transform: translateX(-50%);
+  cursor: col-resize;
+}
+
+.pane-splitter.row {
+  left: 0;
+  right: 0;
+  height: 10px;
+  top: var(--pane-row, 50%);
+  transform: translateY(-50%);
+  cursor: row-resize;
+}
+
+/* 3 屏时横线只作用于右列，拖动柄也只覆盖右列 */
+.pane-grid.layout-3 .pane-splitter.row {
+  left: var(--pane-col, 50%);
+}
+
+.pane-splitter:hover,
+body.pane-splitting .pane-splitter {
+  background: rgba(120, 217, 236, 0.16);
+}
+
+body.pane-splitting {
+  user-select: none;
+}
+/* ===== 分屏拖动柄外观（替代原先的纯透明条）=====
+   平时：中间一根短胶囊条（低调但可发现）
+   悬停：变主色 + 拉长 + 淡光晕
+   拖动中：整条高亮，光晕加强 */
+.pane-splitter {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  transition: background-color 0.16s ease;
+}
+
+.pane-splitter::after {
+  content: "";
+  border-radius: 2px;
+  background: var(--border-card);
+  opacity: 0.95;
+  transition:
+    background-color 0.16s ease,
+    box-shadow 0.16s ease,
+    width 0.16s ease,
+    height 0.16s ease;
+}
+
+.pane-splitter.col {
+  width: 8px;
+}
+
+.pane-splitter.col::after {
+  width: 2px;
+  height: 32px;
+}
+
+.pane-splitter.row {
+  height: 8px;
+}
+
+.pane-splitter.row::after {
+  width: 32px;
+  height: 2px;
+}
+
+/* 悬停 / 拖动中 */
+.pane-splitter:hover {
+  background: rgba(120, 217, 236, 0.06);
+}
+
+body.pane-splitting .pane-splitter {
+  background: rgba(120, 217, 236, 0.1);
+}
+
+.pane-splitter:hover::after,
+body.pane-splitting .pane-splitter::after {
+  background: var(--color-primary);
+  box-shadow: 0 0 6px rgba(120, 217, 236, 0.55);
+}
+
+.pane-splitter.col:hover::after,
+body.pane-splitting .pane-splitter.col::after {
+  width: 3px;
+  height: 48px;
+}
+
+.pane-splitter.row:hover::after,
+body.pane-splitting .pane-splitter.row::after {
+  width: 48px;
+  height: 3px;
+}
+/* ===== 拖动柄：默认隐藏，指向分割线才出现 ===== */
+.pane-splitter::after {
+  /* 平时不画：只有鼠标进入热区才浮现，避免十字形常驻显得杂乱 */
+  opacity: 0;
+  background: var(--color-primary);
+  box-shadow: 0 0 8px rgba(120, 217, 236, 0.55);
+  transition: opacity 0.14s ease, width 0.14s ease, height 0.14s ease;
+}
+
+/* 3px 宽/高：与 1px 分割线中心对齐时两侧各溢 1px，视觉上不会偏 */
+.pane-splitter.col::after {
+  width: 3px;
+  height: 40px;
+}
+
+.pane-splitter.row::after {
+  width: 40px;
+  height: 3px;
+}
+
+.pane-splitter:hover::after,
+body.pane-splitting .pane-splitter::after {
+  opacity: 1;
+}
+
+.pane-splitter.col:hover::after,
+body.pane-splitting .pane-splitter.col::after {
+  height: 56px;
+}
+
+.pane-splitter.row:hover::after,
+body.pane-splitting .pane-splitter.row::after {
+  width: 56px;
+}
+
+/* 拖动时提示气泡：只在第一次拖动时出现一次 */
+.pane-split-tip {
+  position: fixed;
+  z-index: 3000;
+  transform: translateX(-50%);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-card);
+  background: var(--bg-modal);
+  color: var(--text-main);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35);
+}
+/* 广播台逐台结果标记 */
+.bp-pane {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bp-result {
+  font-weight: 700;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.bp-result.ok {
+  color: #4ADE80;
+}
+
+.bp-result.fail {
+  color: #F48771;
+}
+/* 两个复选框并排（字体加粗 + 输出高亮），避免各占一排 */
+.settings-inline-checks {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
 }

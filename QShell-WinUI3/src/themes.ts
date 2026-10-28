@@ -57,7 +57,7 @@ export const THEME_PRESETS: ThemePreset[] = [
   },
   {
     id: "one-dark",
-    name: "One Dark",
+    name: "Dark",
     dark: {
       primary: "#61afef",
       swatch: ["#282c34", "#3b4048", "#61afef"],
