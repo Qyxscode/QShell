@@ -6,7 +6,7 @@
 
 - 路径：`C:\Users\a6704\Desktop\SSH`（仓库根），应用在 `QShell-WinUI3/`
 - 技术栈：Tauri 2 + Rust + Vue 3 + xterm.js，Windows 10/11
-- 当前版本：**0.99.86**（已发布）
+- 当前版本：**0.99.87**（已发布）
 - 前端：`src/App.vue`（约 8500 行，单体）、`src/components/`（12 个组件）、`src/styles/app.css`（约 8900 行）
 - 后端：`src-tauri/src/`（ssh/sftp/ftp/monitor/traffic/port_forward/trace_route 等）
 
@@ -135,8 +135,32 @@ BUGS.md 中原标记「待修复」的 BUG-061 / 062 / 063 / 065 已由用户确
 - 问题：铃铛按钮位置可能**落在气泡左边缘之外**，三角被钳在 20px 处，无法对准
 - 彻底修法：气泡改为**跟随按钮定位**（行内 `left`，去掉固定 `right: 15px`），使按钮中心始终在气泡内
 
+**文字发虚（浅色模式最明显）**（2026-10-28）：
+
+- 现象：浅色主题下大量中文小字笔画发虚、像缺像素；深色下不明显。
+- 真正原因（**两条叠加**，都不是"缺字体阴影"，加阴影只会更糊）：
+  1. `body, html, #app { -webkit-font-smoothing: antialiased }` —— 在 Windows 上强制灰度抗锯齿，**关掉系统 ClearType**；
+  2. 大面积容器常驻合成层：`.workspace-layout { transform: translateZ(0) }`、`.right-panel-card { will-change: width,flex-basis,transform,opacity }`、`.mgmt-view { will-change: transform }`、`.terminal-viewport { translateZ(0) }` —— **Chromium 在合成层内禁用 ClearType**。
+- 修法与铁律：
+  - `-webkit-font-smoothing: subpixel-antialiased` + `text-rendering: auto`（**不要再写 antialiased**）；
+  - 不要给大面积容器常驻 `translateZ(0)` / `will-change`，动画时浏览器会自动提升图层；
+  - 字体栈：西文 `Segoe UI Variable Text → Segoe UI`，中文 **显式** `Microsoft YaHei UI → Microsoft YaHei`（不写死会回退宋体/等宽，最糊）；
+  - 中文文本**不要**用 `monospace` 承载（等宽无中文，回退字体极糊）；
+  - 字号下限：中文 10px 仍偏糊，次要信息尽量 ≥11px，避免 `letter-spacing` 配合小字号（会把笔画拆散）；
+  - `options.ts` 的「系统推荐默认」必须与 `App.vue` 的 `defaultGlobalFont` 同步，旧栈由 `LEGACY_DEFAULT_FONT` 自动迁移。
+- 保留项：`.center-terminal-card` 的 `translateZ(0)`（修圆角闪烁，终端内是等宽英文，影响小）；`.history-cmd` 的 Consolas（命令文本有意等宽）。
+
 ## 代码风格约定
 
 - 注释用中文，说明「为什么」而不是「做了什么」
 - 新增功能一律新文件（组件 / composable / 数据文件），不要继续塞进 `App.vue`
 - 布局类改动同步写入 `BUGS.md` 或本文件，避免新会话重复踩坑
+
+**底部抽屉（命令面板 / 广播台）动画期间的线条与空白**（2026-10-29，踩了三次才修好）：
+
+- 现象：面板展开/收起过程中"没有描边"，动画结束才出现；同时终端底部露出一截容器底色。
+- **三个独立原因，任何一个都会造成同一观感**：
+  1. **opacity 过渡**：`.quick-palette { opacity: 0; transition: ... opacity .6s }` 会把整个元素（含 inset 描边）一起淡掉。已删除 opacity 过渡，只保留 height/max-height 动画（面板本来就有 overflow:hidden 能完全隐藏）。
+  2. **终端没跟上**：面板高度动画 0.8s 期间终端区变高，但 xterm 只在动画结束 fit 一次 → 底部露底色。已改为 `fitPanesDuringPanelAnimation()`：动画期间 requestAnimationFrame 逐帧 fit，结束时统一发一次 resize。
+  3. **class 时序**：线画在 `.is-open` 的 box-shadow 上，收起时类先移除、动画才开始 → 线提前消失。已把上下两条线改成 **元素自身的 background-image**（`linear-gradient` + `background-size: 100% 1px`，位置 0 0 / 0 100%），不挂任何 class，高度为 0 时自动不可见。
+- **铁律**：抽屉类元素的边界线不要挂在"展开态 class"上，用元素自身背景或常驻伪元素画；同时不要给整个面板加 opacity 过渡。
