@@ -6,7 +6,7 @@
 
 - 路径：`C:\Users\a6704\Desktop\SSH`（仓库根），应用在 `QShell-WinUI3/`
 - 技术栈：Tauri 2 + Rust + Vue 3 + xterm.js，Windows 10/11
-- 当前版本：**0.99.87**（已发布）
+- 当前版本：**0.99.88**（已发布）
 - 前端：`src/App.vue`（约 8500 行，单体）、`src/components/`（12 个组件）、`src/styles/app.css`（约 8900 行）
 - 后端：`src-tauri/src/`（ssh/sftp/ftp/monitor/traffic/port_forward/trace_route 等）
 
@@ -85,7 +85,7 @@ paneKeys           // computed：当前布局的合法槽位
 
 仍存在的：
 
-- 按钮精简未做
+- 按钮精简：**已达成**（2026-10-29 用户确认，上下文显隐后顶栏图标数量已可接受，不再做视觉分组/合并）
 - xterm 历史 reflow 导致分屏后旧内容「挤压」（库特性，不处理）
 
 BUGS.md 中原标记「待修复」的 BUG-061 / 062 / 063 / 065 已由用户确认修复，状态已更新。

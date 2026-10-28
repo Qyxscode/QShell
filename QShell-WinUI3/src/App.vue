@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, nextTick, shallowReactive } from "vue";
 import { Terminal } from "@xterm/xterm";
+import type { ILink } from "@xterm/xterm";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -497,7 +499,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.87");
+const appVersion = ref("0.99.88");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -844,6 +846,124 @@ function paneBoxStyle(sid: string): Record<string, string> {
   const pkey = paneKeyOfSession(sid);
   if (!pkey) return {};
   return { gridArea: paneGridArea(pkey) };
+}
+
+// ===== 分屏分隔条：拖动调整行列比例（双击复位） =====
+const PANE_SPLIT_MIN = 0.15;
+const PANE_SPLIT_MAX = 0.85;
+
+function clampPaneSplit(value: number): number {
+  if (!Number.isFinite(value)) return 0.5;
+  return Math.min(PANE_SPLIT_MAX, Math.max(PANE_SPLIT_MIN, value));
+}
+
+function loadPaneSplit(): { col: number; row: number } {
+  try {
+    const raw = localStorage.getItem("qshell_pane_split");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return { col: clampPaneSplit(Number(parsed.col)), row: clampPaneSplit(Number(parsed.row)) };
+    }
+  } catch {}
+  return { col: 0.5, row: 0.5 };
+}
+
+const paneSplit = ref(loadPaneSplit());
+
+/** 把比例通过 CSS 变量传给 grid-template（百分比 + 剩余 1fr） */
+function paneGridStyle(): Record<string, string> {
+  if (paneLayout.value === 1) return {};
+  return {
+    "--pane-col": `${(paneSplit.value.col * 100).toFixed(2)}%`,
+    "--pane-row": `${(paneSplit.value.row * 100).toFixed(2)}%`,
+  };
+}
+
+let paneSplitDrag: "col" | "row" | null = null;
+let paneSplitRaf = 0;
+
+/** 首次拖动的引导提示：告诉新用户"双击可恢复均分"，只出现一次 */
+const paneSplitTip = ref({ visible: false, x: 0, y: 0 });
+let paneSplitTipTimer = 0;
+
+function maybeShowPaneSplitTip(e: PointerEvent) {
+  try {
+    if (localStorage.getItem("qshell_pane_split_tip") === "1") return;
+    localStorage.setItem("qshell_pane_split_tip", "1");
+  } catch {
+    return;
+  }
+  paneSplitTip.value = { visible: true, x: e.clientX, y: e.clientY };
+  if (paneSplitTipTimer) window.clearTimeout(paneSplitTipTimer);
+  paneSplitTipTimer = window.setTimeout(() => {
+    paneSplitTip.value = { ...paneSplitTip.value, visible: false };
+  }, 3200);
+}
+
+function fitVisiblePaneSessions(notifyRemote = false) {
+  for (const sid of visiblePaneSessionIds()) {
+    const t = sessions.value.find(s => s.id === sid);
+    if (!t?.fitInstance) continue;
+    try {
+      t.fitInstance.fit();
+      if (notifyRemote && t.termInstance) {
+        sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
+      }
+    } catch (_) {}
+  }
+}
+
+function beginPaneSplit(axis: "col" | "row", e: PointerEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  maybeShowPaneSplitTip(e);
+  paneSplitDrag = axis;
+  document.body.classList.add("pane-splitting");
+  window.addEventListener("pointermove", onPaneSplitMove);
+  window.addEventListener("pointerup", endPaneSplit, { once: true });
+}
+
+function onPaneSplitMove(e: PointerEvent) {
+  if (!paneSplitDrag) return;
+  const grid = document.querySelector<HTMLElement>(".pane-grid");
+  if (!grid) return;
+  const rect = grid.getBoundingClientRect();
+  const ratio = paneSplitDrag === "col"
+    ? (e.clientX - rect.left) / Math.max(1, rect.width)
+    : (e.clientY - rect.top) / Math.max(1, rect.height);
+  const clamped = clampPaneSplit(ratio);
+  if (Math.abs(clamped - paneSplit.value[paneSplitDrag]) < 0.0005) return;
+  paneSplit.value = { ...paneSplit.value, [paneSplitDrag]: clamped };
+  // 每帧最多 fit 一次：拖动中终端尺寸在连续变化，不 fit 会留白
+  if (!paneSplitRaf) {
+    paneSplitRaf = requestAnimationFrame(() => {
+      paneSplitRaf = 0;
+      fitVisiblePaneSessions(false);
+    });
+  }
+}
+
+function endPaneSplit() {
+  paneSplitDrag = null;
+  document.body.classList.remove("pane-splitting");
+  window.removeEventListener("pointermove", onPaneSplitMove);
+  if (paneSplitRaf) {
+    cancelAnimationFrame(paneSplitRaf);
+    paneSplitRaf = 0;
+  }
+  try {
+    localStorage.setItem("qshell_pane_split", JSON.stringify(paneSplit.value));
+  } catch {}
+  // 松手后补一次并把最终行列数同步给远端 PTY
+  fitVisiblePaneSessions(true);
+}
+
+function resetPaneSplit() {
+  paneSplit.value = { col: 0.5, row: 0.5 };
+  try {
+    localStorage.setItem("qshell_pane_split", JSON.stringify(paneSplit.value));
+  } catch {}
+  fitVisiblePaneSessions(true);
 }
 
 function paneSlotFilled(pkey: string): boolean {
@@ -2011,6 +2131,7 @@ const terminalSettings = ref({
   bg_image_fit: "cover" as "cover" | "contain" | "stretch" | "tile",
   bg_image_dim: 0.55,
   bg_image_auto_fg: true,
+  output_highlight: true,
   minimize_to_tray: true,
   accent_color: "",
 });
@@ -2025,6 +2146,115 @@ const autostartEnabled = ref(false);
  * 如果拿显示色当基准，切回来就再也回不到用户原本选的颜色了（BUG-071）。
  */
 const userFgColor = ref("");
+
+/**
+ * 终端输出高亮：ERROR/WARN/OK 之类的关键字着色。
+ * 只处理「纯文本片段」——已经带 ANSI 颜色的数据直接跳过，避免打乱程序自己的配色；
+ * 用 \x1b[39m 只重置前景色，不影响背景/粗体等其它属性。
+ */
+const OUTPUT_HIGHLIGHT_RULES: Array<{ re: RegExp; color: string }> = [
+  { re: /(?<![A-Za-z])(ERROR|FATAL|CRITICAL|FAILED|FAILURE)(?![A-Za-z])/g, color: "\u001b[91m" },
+  { re: /(?<![A-Za-z])(WARN|WARNING)(?![A-Za-z])/g, color: "\u001b[93m" },
+  { re: /(?<![A-Za-z])(OK|SUCCESS|SUCCEEDED|DONE)(?![A-Za-z])/g, color: "\u001b[92m" },
+];
+
+/** 单行高亮：含 ANSI 的行原样返回（避免打乱程序自身的配色） */
+function highlightPlainLine(line: string): string {
+  if (!line || line.includes("\u001b")) return line;
+  let out = line;
+  for (const rule of OUTPUT_HIGHLIGHT_RULES) {
+    rule.re.lastIndex = 0;
+    out = out.replace(rule.re, `${rule.color}$1\u001b[39m`);
+  }
+  return out;
+}
+
+function applyOutputHighlight(text: string): string {
+  if (!terminalSettings.value.output_highlight) return text;
+  if (!text) return text;
+  // 大块输出（cat 大文件等）不处理，避免正则拖慢渲染
+  if (text.length > 8192) return text;
+  // 按行处理而不是整块判断：SSH 的数据块里常混着一行带颜色的提示符，
+  // 整块跳过会导致紧挨着的纯文本行（echo ERROR 之类）也一起被忽略。
+  return text.split("\n").map(highlightPlainLine).join("\n");
+}
+
+/** 终端里的 URL / IP / 路径：Ctrl+点击打开（URL）或复制（IP / 路径） */
+type TermLinkKind = "url" | "ip" | "path";
+
+const TERM_LINK_PATTERNS: Array<{ re: RegExp; kind: TermLinkKind }> = [
+  { re: /https?:\/\/[^\s'"<>()\]]+/g, kind: "url" },
+  { re: /(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?/g, kind: "ip" },
+  // 绝对路径：至少两级，避免把单个 / 当链接
+  { re: /(?:^|[\s"'`(=])((?:\/[\w.@-]+){2,}\/?)/g, kind: "path" },
+];
+
+function handleTerminalLinkClick(value: string, kind: TermLinkKind) {
+  if (kind === "url") {
+    openUrl(value).catch(() => {
+      void writeClipboardText(value);
+    });
+    return;
+  }
+  void writeClipboardText(value);
+}
+
+function registerTerminalLinks(term: Terminal) {
+  if (typeof term.registerLinkProvider !== "function") return;
+  term.registerLinkProvider({
+    provideLinks(y, callback) {
+      const line = term.buffer.active.getLine(y - 1);
+      if (!line) {
+        callback(undefined);
+        return;
+      }
+      // 逐单元格取文本：中文等宽字符占 2 列但只有 1 个字符，
+      // 直接用 translateToString 的索引当列号会让下划线整体左移（错位）。
+      let text = "";
+      const startCol: number[] = [];
+      const charWidth: number[] = [];
+      for (let i = 0; i < line.length; i++) {
+        const cell = line.getCell(i);
+        if (!cell) break;
+        const width = cell.getWidth();
+        if (width === 0) continue; // 宽字符的续格，跳过
+        startCol.push(i);
+        charWidth.push(width);
+        text += cell.getChars() || " ";
+      }
+      if (!text || text.length > 2000) {
+        callback(undefined);
+        return;
+      }
+      const links: ILink[] = [];
+      for (const { re, kind } of TERM_LINK_PATTERNS) {
+        re.lastIndex = 0;
+        let matched: RegExpExecArray | null;
+        while ((matched = re.exec(text)) !== null) {
+          const value = matched[1] ?? matched[0];
+          if (!value) continue;
+          // 有捕获组时，真正的内容起点要加上前缀偏移
+          const from = matched.index + (matched[0].length - value.length);
+          const to = from + value.length - 1;
+          if (startCol[from] === undefined || startCol[to] === undefined) continue;
+          links.push({
+            range: {
+              start: { x: startCol[from] + 1, y },
+              end: { x: startCol[to] + charWidth[to], y },
+            },
+            text: value,
+            decorations: { underline: true, pointerCursor: true },
+            activate: (event: MouseEvent) => {
+              if (!(event.ctrlKey || event.metaKey)) return;
+              handleTerminalLinkClick(value, kind);
+            },
+          });
+        }
+      }
+      callback(links.length ? links : undefined);
+    },
+  });
+}
 
 function setTerminalFgColor(color: string) {
   terminalSettings.value.terminal_fg_color = color;
@@ -2124,9 +2354,26 @@ function toggleTerminalFullscreen() {
   });
 }
 
+/**
+ * Alt+1~4 直接切换分屏布局。
+ * 用 e.code（Digit1..Digit4）而不是 e.key：Windows 上 Alt 组合会改变 key 的字符。
+ * 返回 true 表示已处理，调用方应阻止事件继续传播。
+ */
+function handlePaneLayoutShortcut(e: KeyboardEvent): boolean {
+  if (e.type !== "keydown") return false;
+  if (!e.altKey || e.ctrlKey || e.shiftKey || e.metaKey) return false;
+  const matched = /^Digit([1-4])$/.exec(e.code || "");
+  if (!matched) return false;
+  e.preventDefault();
+  e.stopPropagation();
+  setPaneLayout(Number(matched[1]) as 1 | 2 | 3 | 4);
+  return true;
+}
+
 function handleFullscreenKey(e: KeyboardEvent) {
   // 只处理 keydown：keyup 也会冒泡到这里，会导致一次按键切换两次
   if (e.type !== "keydown") return;
+  if (handlePaneLayoutShortcut(e)) return;
   // 终端内部的键盘处理器已经处理过（preventDefault + 停止冒泡），这里不再重复切换
   if (e.defaultPrevented) return;
   if (e.key === "F11") {
@@ -2318,6 +2565,8 @@ const broadcastSelected = ref<string[]>([]);
 const broadcastInput = ref("");
 const broadcastHint = ref("");
 const broadcastSending = ref(false);
+/** 每台的发送结果：ok=成功，fail=失败；发送前清空 */
+const broadcastResults = ref<Record<string, "ok" | "fail">>({});
 
 const broadcastCandidates = computed(() => sessions.value.filter(s => s.alive));
 
@@ -2380,25 +2629,24 @@ function showBroadcastHint(text: string, holdMs = 4000) {
  * 群发：逐台下发，单台失败不中断其余台。
  * 多行输入按行依次回车，shell 里就是逐条执行。
  */
-async function sendBroadcast() {
-  if (broadcastSending.value) return;
-  const cmd = broadcastInput.value.trim();
-  const targets = broadcastAliveSelected();
-  if (!cmd || targets.length === 0) return;
-
+async function doSendBroadcast(cmd: string, targets: string[]) {
   const payload = cmd.split(/\r?\n/).map(line => line + "\r").join("");
   const failed: string[] = [];
+  const results: Record<string, "ok" | "fail"> = {};
   let sent = 0;
 
   broadcastSending.value = true;
+  broadcastResults.value = {};
   try {
     for (const sid of targets) {
       const tab = sessions.value.find(s => s.id === sid);
       if (!tab?.alive) {
+        results[sid] = "fail";
         failed.push(`${tab?.name || sid}（已断开）`);
         continue;
       }
       if (tab.read_only) {
+        results[sid] = "fail";
         failed.push(`${tab.name}（只读）`);
         continue;
       }
@@ -2408,14 +2656,19 @@ async function sendBroadcast() {
         } else {
           await invoke("write_ssh_session", { sessionId: sid, data: payload });
         }
+        results[sid] = "ok";
         sent++;
       } catch (error: any) {
+        results[sid] = "fail";
         const raw = String(error?.message || error || "发送失败");
         failed.push(`${tab.name}（${raw}）`);
       }
+      // 逐台刷新，长列表时能看到进度
+      broadcastResults.value = { ...results };
     }
   } finally {
     broadcastSending.value = false;
+    broadcastResults.value = { ...results };
   }
 
   // 群发也算执行了一条命令，记进历史供命令面板复用
@@ -2430,6 +2683,28 @@ async function sendBroadcast() {
     // 有失败时保留输入内容，方便改完成功的部分后再补发
     if (sent > 0) broadcastInput.value = "";
   }
+}
+
+/** 发送前确认：群发是不可撤销的批量操作，先让用户看一眼目标 */
+function sendBroadcast() {
+  if (broadcastSending.value) return;
+  const cmd = broadcastInput.value.trim();
+  const targets = broadcastAliveSelected();
+  if (!cmd || targets.length === 0) return;
+
+  const names = targets.map(sid => sessions.value.find(s => s.id === sid)?.name || sid);
+  customConfirmModal.value = {
+    show: true,
+    title: "确认群发",
+    message: `将把下面这条命令发送到 ${targets.length} 台会话，回车会立即执行：`,
+    items: [cmd, `目标：${names.join("、")}`],
+    danger: false,
+    confirmText: "发送",
+    onConfirm: () => {
+      customConfirmModal.value.show = false;
+      void doSendBroadcast(cmd, targets);
+    },
+  };
 }
 
 // 抽屉开合会改变终端可见高度：动画期间逐帧适配，结束后统一通知远端
@@ -5075,6 +5350,9 @@ async function loadConfig() {
       if (cfg.settings.terminal_bg_image_auto_fg !== undefined) {
         terminalSettings.value.bg_image_auto_fg = !!cfg.settings.terminal_bg_image_auto_fg;
       }
+      if (cfg.settings.output_highlight !== undefined) {
+        terminalSettings.value.output_highlight = !!cfg.settings.output_highlight;
+      }
       const storedBgImage = cfg.settings.terminal_bg_image || cfg.settings.custom_bg_image;
       if (storedBgImage) {
         await setTerminalBackgroundImage(storedBgImage, false);
@@ -5443,6 +5721,7 @@ function applyTerminalSettings(closeModal: boolean | MouseEvent = true) {
   configData.value.settings.terminal_bg_image_fit = terminalSettings.value.bg_image_fit;
   configData.value.settings.terminal_bg_image_dim = terminalSettings.value.bg_image_dim;
   configData.value.settings.terminal_bg_image_auto_fg = terminalSettings.value.bg_image_auto_fg;
+  configData.value.settings.output_highlight = terminalSettings.value.output_highlight;
   configData.value.settings.minimize_to_tray = terminalSettings.value.minimize_to_tray;
   configData.value.settings.accent_color = terminalSettings.value.accent_color;
   applyAccentColor(terminalSettings.value.accent_color);
@@ -5544,6 +5823,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
   term.focus();
   newTab.termInstance = term;
   newTab.fitInstance = fit;
+  // 终端内 URL / IP / 路径：Ctrl+点击打开或复制
+  registerTerminalLinks(term);
 
   // 1:1 对标 ssh8.py: 接管并注入精准闪烁节奏与颜色变量
   applyCursorBlinkToTerminal(
@@ -5560,6 +5841,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
   // 全量键盘快捷键捕获 (复制/粘贴/全选)
     term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
     if (e.type !== "keydown") return true;
+    // Alt+1~4 切分屏：必须在终端这一层拦掉，否则会被当成 ESC 序列发给远端
+    if (handlePaneLayoutShortcut(e)) return false;
     // 终端内优先处理全屏快捷键，避免 F11 / Esc 被当成终端输入发走
     if (e.key === "F11") {
       e.preventDefault();
@@ -5665,7 +5948,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     });
 
     const unlisten = await listen<string>(`ssh-data-${sid}`, (event) => {
-      term.write(event.payload);
+      // 输出高亮：关键字着色（开关在偏好设置里，默认开启）
+      term.write(applyOutputHighlight(event.payload));
       // 只保留最近输出片段，用于判断当前是否处于密码输入提示（避免把密码写进历史）
       newTab.recentOutput = ((newTab.recentOutput || "") + event.payload).slice(-400);
     });
@@ -8481,7 +8765,7 @@ onUnmounted(() => {
           <button
             :class="['top-icon-btn', paneLayout > 1 ? 'active' : '']"
             @click="showPaneMenu = !showPaneMenu"
-            :title="'分屏布局（当前 ' + paneLayout + ' 屏）'"
+            :title="'分屏布局（当前 ' + paneLayout + ' 屏）· Alt+1~4 快速切换'"
           >
             <Icons name="split" size="19" />
             <span class="split-count">{{ paneLayout }}</span>
@@ -8923,11 +9207,32 @@ onUnmounted(() => {
             </div>
 
             <div class="terminal-panes-container">
-            <div class="pane-grid" :class="'layout-' + paneLayout">
+            <div class="pane-grid" :class="'layout-' + paneLayout" :style="paneGridStyle()">
               <div class="pane-grid-lines" :class="'lines-' + paneLayout">
                 <div class="grid-v-line"></div>
                 <div class="grid-h-line"></div>
               </div>
+              <!-- 可拖动分隔条：拖调节比例，双击复位 -->
+              <div
+                v-if="paneLayout > 1"
+                class="pane-splitter col"
+                title="拖动调整左右比例，双击复位"
+                @pointerdown="beginPaneSplit('col', $event)"
+                @dblclick.stop="resetPaneSplit"
+              ></div>
+              <div
+                v-if="paneLayout >= 3"
+                class="pane-splitter row"
+                title="拖动调整上下比例，双击复位"
+                @pointerdown="beginPaneSplit('row', $event)"
+                @dblclick.stop="resetPaneSplit"
+              ></div>
+              <!-- 首次拖动时的一次性引导 -->
+              <div
+                v-if="paneSplitTip.visible"
+                class="pane-split-tip"
+                :style="{ left: paneSplitTip.x + 'px', top: (paneSplitTip.y - 36) + 'px' }"
+              >双击分隔线可恢复均分</div>
               <DropUploadOverlay
                 :visible="!!dropUploadTarget"
                 :area="dropUploadTarget?.area || '1 / 1 / 2 / 2'"
@@ -9054,7 +9359,14 @@ onUnmounted(() => {
                 />
                 <i class="bp-dot" :style="{ background: broadcastPaneColor(tab.id) }"></i>
                 <span class="bp-name">{{ tab.name }}</span>
-                <span class="bp-pane" v-if="broadcastPaneLabel(tab.id)">{{ broadcastPaneLabel(tab.id) }}</span>
+                <span class="bp-pane">
+                  <span
+                    v-if="broadcastResults[tab.id]"
+                    :class="['bp-result', broadcastResults[tab.id]]"
+                    :title="broadcastResults[tab.id] === 'ok' ? '发送成功' : '发送失败'"
+                  >{{ broadcastResults[tab.id] === "ok" ? "✓" : "✕" }}</span>
+                  {{ broadcastPaneLabel(tab.id) }}
+                </span>
                 <span class="bp-addr">{{ tab.host?.host }}:{{ tab.host?.port }}</span>
               </div>
               <div v-if="broadcastCandidates.length === 0" class="bp-empty">
@@ -10970,13 +11282,17 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 3. 字体加粗 -->
+          <!-- 3. 字体加粗 + 输出高亮（同一个开关行，避免多占一排） -->
           <div class="settings-form-row">
             <label class="settings-form-label">字体加粗:</label>
-            <div class="settings-form-field">
+            <div class="settings-form-field settings-inline-checks">
               <label class="md3-checkbox-label">
                 <input type="checkbox" v-model="terminalSettings.is_bold" class="md3-check-native" />
                 <span>加粗 (Bold)</span>
+              </label>
+              <label class="md3-checkbox-label" title="把 ERROR / WARN / OK 等关键字按语义着色（仅作用于自身无颜色的输出）">
+                <input type="checkbox" v-model="terminalSettings.output_highlight" class="md3-check-native" />
+                <span>输出高亮</span>
               </label>
             </div>
           </div>
