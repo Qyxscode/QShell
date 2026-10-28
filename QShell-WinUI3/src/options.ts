@@ -41,7 +41,8 @@ export const serialBaudRateOptions: SelectOption<number>[] = [
 ];
 
 export const presetUiFonts = [
-  { name: "系统推荐默认", value: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif' },
+  // 与 App.vue 的 defaultGlobalFont 保持一致：西文 Segoe UI，中文微软雅黑 UI
+  { name: "系统推荐默认", value: '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, "PingFang SC", sans-serif' },
   { name: "微软雅黑 (Microsoft YaHei)", value: '"Microsoft YaHei", sans-serif' },
   { name: "苹方 / 华文细黑 (PingFang SC)", value: '"PingFang SC", "Heiti SC", sans-serif' },
   { name: "Segoe UI", value: '"Segoe UI", sans-serif' },

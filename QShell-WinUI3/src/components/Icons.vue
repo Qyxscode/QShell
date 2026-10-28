@@ -103,6 +103,12 @@
     <path d="m13.1 12.2 4.3 3.6-4.3 3.6" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
   </svg>
 
+  <!-- 10.2 重置/清零 (顺时针回环箭头) -->
+  <svg v-else-if="name === 'refresh'" :width="size || 14" :height="size || 14" viewBox="0 0 24 24" fill="none" class="v-icon">
+    <path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M19.5 4.6V9H15.1" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+
   <!-- 11. 侧边栏折叠/展开图标 (2.1px 饱满线宽 + 居中外框) -->
   <svg v-else-if="name === 'panel'" :width="size" :height="size" viewBox="0 0 24 24" fill="none" class="v-icon icon-collapse">
     <rect x="5" y="5" width="14" height="14" rx="2.5" stroke="currentColor" stroke-width="2.1"/>
@@ -196,7 +202,7 @@
 
 <script setup lang="ts">
 defineProps<{
-  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin" | "split" | "broadcast";
+  name: "folder" | "chevron" | "host" | "file" | "settings" | "cloud" | "alert" | "bolt" | "moon" | "sun" | "bell" | "arrows" | "panel" | "doc" | "search" | "win-min" | "win-max" | "win-close" | "lock" | "plus" | "minus" | "arrow-up" | "arrow-down" | "close" | "fullscreen" | "pin" | "split" | "broadcast" | "refresh";
   size?: number | string;
   expanded?: boolean;
 }>();
