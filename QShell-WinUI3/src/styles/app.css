@@ -10,14 +10,23 @@ body, html, #app {
   height: 100%;
   overflow: hidden;
   font-family: var(--app-font-family);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
+  /* Windows/WebView2：要系统次像素渲染（ClearType）才会有"实"的笔画。
+     原来写 antialiased 会强制灰度抗锯齿，浅色背景下小字明显发虚、缺笔画。 */
+  -webkit-font-smoothing: subpixel-antialiased;
+  -moz-osx-font-smoothing: auto;
+  text-rendering: auto;
   background: transparent;
 }
 
 button, input, select {
   font-family: var(--app-font-family);
+}
+
+/* 占位符：浏览器默认色在浅色主题下偏淡、发灰，统一用主题次要文字色 */
+input::placeholder,
+textarea::placeholder {
+  color: var(--text-sub);
+  opacity: 1;
 }
 
 /* --- 按钮字重：统一为中等字重，避免全局粗体 --- */
@@ -49,7 +58,10 @@ button {
 }
 
 :root {
-  --app-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif;
+  /* 西文优先 Segoe UI Variable（Win11 字形更精致）→ Segoe UI；
+     中文显式指定微软雅黑 UI，避免回退到宋体（宋体小字号极容易发虚）。
+     顺序很重要：把中文字体放在西文字体之后，英文数字仍用 Segoe。 */
+  --app-font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, "PingFang SC", sans-serif;
   /* ===================== Material Design 3 (MD3) 纯中性暗色调色板 (MD3 Neutral - 零偏色、纯正中性灰层次) ===================== */
   /* MD3 Neutral Surface (基底底色): 纯粹无偏色的中性深灰 (N-10/12) */
   --bg-app: #151517;
@@ -343,11 +355,12 @@ html.window-resizing .workspace-layout {
 }
 
 .version-badge .badge-text {
-  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif;
-  font-size: 8.5px;
+  /* 8.5px 在 100% DPI 下必然发虚，抬到 9.5px 并跟随界面字体 */
+  font-family: inherit;
+  font-size: 9.5px;
   font-weight: 500;
   color: #FFE082;
-  letter-spacing: 0.1px;
+  letter-spacing: 0;
   line-height: 1;
   display: inline-flex;
   align-items: center;
@@ -371,6 +384,106 @@ html.window-resizing .workspace-layout {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+/* 顶栏功能按钮组：整排嵌进一条"凹陷槽"（多层光影），按钮自身仍是浮起的 */
+.top-actions-slot {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  /* 36 而不是 34：按钮 30 高，上下各留 3px，hover 底色才不会和槽沿的线贴在一起 */
+  height: 36px;
+  padding: 0 5px;
+  border-radius: 9px;
+  /* ① 渐变底：上暗下亮，制造内壁的方向感 */
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.03)),
+    var(--bg-capsule);
+  /* 上下沿各自用"相对槽底更深/更亮"的线，两个主题下都能看到槽口，
+     不再出现"深色只有下沿、浅色只有上沿"的单边感。
+     深色主题里上沿暗线要够狠：标题栏 #151517 已经很暗，
+     0.35 的黑压出来的 #1B1B1E 反而比外框亮，看不见缝；0.65 才能压到 #111113。 */
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.65),
+    /* 上沿暗缝 */
+    inset 0 3px 8px rgba(0, 0, 0, 0.28),
+    /* 主凹陷阴影：向内扩散 */
+    inset 0 -1px 0 rgba(255, 255, 255, 0.05),
+    /* 下沿亮线（压低一点，避免和 hover 底色混成一片） */
+    inset 0 0 0 1px rgba(255, 255, 255, 0.09),
+    /* 槽口一圈可见的光边：四边都界定得出来 */
+    0 -1px 0 rgba(255, 255, 255, 0.07),
+    /* 槽外上沿微亮：槽边的厚度 */
+    0 1px 0 rgba(255, 255, 255, 0.03);
+  /* 外沿下高光 */
+}
+
+/* 槽底中央反光线：只亮中间、两头淡出，比整条硬线自然 */
+.top-actions-slot::after {
+  content: "";
+  position: absolute;
+  left: 14%;
+  right: 14%;
+  bottom: 1px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.14), transparent);
+  pointer-events: none;
+}
+
+[data-theme="light"] .top-actions-slot {
+  background:
+    linear-gradient(180deg, rgba(0, 0, 0, 0.06), rgba(255, 255, 255, 0.30)),
+    var(--bg-capsule);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 0, 0, 0.12),
+    /* 上沿暗线 */
+    inset 0 -1px 0 rgba(0, 0, 0, 0.05),
+    /* 浅色下沿也走暗线：白线在浅底上看不见 */
+    inset 0 2px 5px rgba(0, 0, 0, 0.07),
+    inset 0 0 0 1px rgba(0, 0, 0, 0.08),
+    /* 浅色槽口用暗描边界定边界 */
+    0 1px 0 rgba(255, 255, 255, 0.65);
+  /* 外侧白光表现厚度 */
+}
+
+[data-theme="light"] .top-actions-slot::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.9), transparent);
+}
+
+/* 槽内按钮 hover：只给一点点内部上高光，
+   不加外部投影 —— 那层投影会在槽里形成"凸出/超界"的错觉 */
+.top-actions-slot .top-icon-btn:hover {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="light"] .top-actions-slot .top-icon-btn:hover {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+/* 按上下文显隐的按钮：出现/消失时展开宽度 + 淡入缩放，避免整排突然跳动 */
+.action-btn-enter-active {
+  transition:
+    width 0.24s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.18s ease,
+    transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.action-btn-leave-active {
+  transition:
+    width 0.18s cubic-bezier(0.4, 0, 1, 1),
+    opacity 0.14s ease,
+    transform 0.18s ease;
+}
+
+.action-btn-enter-from,
+.action-btn-leave-to {
+  width: 0 !important;
+  min-width: 0;
+  padding: 0;
+  opacity: 0;
+  overflow: hidden;
+  transform: scale(0.55);
 }
 
 .btn-mgmt-pill {
@@ -583,8 +696,9 @@ html.window-resizing .workspace-layout {
   height: 100%;
   position: relative;
   min-width: 0;
-  transform: translateZ(0);
-  backface-visibility: hidden;
+  /* 不要常驻 transform / backface-visibility：那会把整个工作区提升为合成层，
+     Windows 上合成层内的文字会失去 ClearType（变灰度抗锯齿→发虚）。
+     视图切换动画本身会临时提升图层，静态时不需要。 */
 }
 
 /* 切到主机管理时主页面只「让位」：保持原位与几何尺寸不变（xterm 度量不归零），
@@ -734,8 +848,8 @@ html.window-resizing .workspace-layout {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  font-family: Consolas, monospace;
-  font-size: 10px;
+  /* 原来 10px + Consolas：中文回退到等宽字体后极容易发虚，改回界面字体并抬到 11px */
+  font-size: 11px;
   color: var(--text-main);
 }
 
@@ -749,7 +863,7 @@ html.window-resizing .workspace-layout {
   border: 1px solid var(--border-capsule);
   background: var(--bg-capsule);
   color: var(--text-main);
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 600;
 }
 
@@ -772,10 +886,11 @@ html.window-resizing .workspace-layout {
 }
 
 .net-section-title {
-  font-size: 10px;
+  /* 10px + letter-spacing 在浅色下笔画容易散，抬到 11px 并去掉字距 */
+  font-size: 11px;
   font-weight: 500;
   color: var(--text-sub);
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
 }
 
 .net-if-badge {
@@ -878,7 +993,8 @@ html.window-resizing .workspace-layout {
 }
 
 .net-if-badge .if-text {
-  font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, monospace, sans-serif;
+  /* 原来写死旧字体栈 + monospace：中文会回退到等宽字体，小字号下最糊 */
+  font-family: inherit;
   font-size: 10px;
   font-weight: 500;
   color: #BEEBF7;
@@ -919,7 +1035,7 @@ html.window-resizing .workspace-layout {
 }
 [data-theme="light"] .net-if-badge.idle .if-dot,
 [data-theme="light"] .net-if-badge.idle .if-text {
-  color: #64748B;
+  color: var(--text-sub);
 }
 
 .net-panel {
@@ -980,7 +1096,7 @@ html.window-resizing .workspace-layout {
   background: var(--bg-capsule);
   color: var(--text-sub);
   font-family: inherit;
-  font-size: 10px;
+  font-size: 11px;
   cursor: pointer;
 }
 
@@ -998,25 +1114,127 @@ html.window-resizing .workspace-layout {
   padding: 0 2px;
 }
 
-.net-stats-legend {
+/* 实时值：和图表里的其它数字同一档，不再比正文还大 */
+.net-stats-head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  padding: 0 2px 2px;
-  border-bottom: 1px solid var(--border-capsule);
+  align-items: center;
+  gap: 10px;
   font-size: 11px;
-  font-family: Consolas, monospace;
+  line-height: 1.2;
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.net-range-wrap {
+  position: relative;
+  margin-left: auto;
+}
+
+.net-range-btn {
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border-input);
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+  font-family: inherit;
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.net-range-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* 小菜单淡入 */
+.pane-menu-fade-enter-active,
+.pane-menu-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.pane-menu-fade-enter-from,
+.pane-menu-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-3px);
+}
+
+.net-range-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 78px;
+  padding: 3px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border-radius: 6px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.3);
+}
+
+.net-range-item {
+  padding: 4px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.net-range-item:hover {
+  background: var(--bg-capsule);
+}
+
+.net-range-item.active {
+  color: var(--color-primary);
 }
 
 .net-stats-chart {
+  position: relative;
   flex: 1;
-  min-height: 0;
+  min-height: 74px;
   display: flex;
 }
 
 .net-chart-svg {
   width: 100%;
   height: 100%;
+  display: block;
+  /* 图形占满整个框宽，文字另用 HTML 定位，不再被 preserveAspectRatio 拉伸 */
+}
+
+/* 峰值标注放在时间轴这一行的中间：不再压在绘图区右上角被高速曲线盖住 */
+.net-chart-peak {
+  padding: 0 4px;
+  border-radius: 3px;
+  /* 用面板底色当遮罩，曲线经过时文字依然读得清 */
+  background: var(--bg-card);
+  color: var(--text-sub);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 9px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 时间轴：底部两端内嵌，不占额外高度 */
+.net-chart-axis {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 1px;
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-sub);
+  pointer-events: none;
+  font-family: Consolas, "Cascadia Mono", monospace;
 }
 
 .chart-axis {
@@ -1052,6 +1270,7 @@ html.window-resizing .workspace-layout {
   stroke-linecap: round;
 }
 
+/* 实时值颜色 */
 .net-stats-up {
   color: #78D9EC;
   white-space: nowrap;
@@ -1382,8 +1601,8 @@ html.window-resizing .workspace-layout {
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
   box-sizing: border-box;
   position: relative;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 36px;
+  /* 不再用 content-visibility：列表项只有几十个，收益很小；
+     但拖滚动条快速滚动时，元素每帧进出视口都要重新计算/绘制，反而更卡。 */
 }
 
 .host-capsule-item:hover {
@@ -1860,7 +2079,8 @@ html.window-resizing .workspace-layout {
   margin: 0 !important;
   box-sizing: border-box;
   background-color: transparent !important;
-  transform: translateZ(0);
+  /* 不再无条件 translateZ(0)：合成层内的文字会失去 ClearType，
+     空窗格的「点击选择会话」等提示会明显发虚。终端内容本身是 canvas，不需要父层合成。 */
 }
 
 .terminal-readonly-badge {
@@ -2086,7 +2306,8 @@ html.window-resizing .workspace-layout {
               opacity 0.22s cubic-bezier(0.16, 1, 0.3, 1),
               transform 0.28s cubic-bezier(0.16, 1, 0.3, 1),
               border-color 0.2s ease;
-  will-change: width, flex-basis, transform, opacity;
+  /* 这里原来常驻 will-change，会让整个右栏一直是合成层、文字失去 ClearType。
+     width/flex-basis 本来也无法合成，交给 transition 就够。 */
 }
 
 .right-panel-card.is-collapsed {
@@ -2523,8 +2744,7 @@ html.window-resizing .workspace-layout {
   transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
   position: relative;
   box-sizing: border-box;
-  content-visibility: auto;
-  contain-intrinsic-size: auto 32px;
+  /* 同设备列表：短列表不用 content-visibility，避免滚动时反复算布局 */
 }
 
 .memo-capsule-item:hover {
@@ -2922,7 +3142,8 @@ html.window-resizing .workspace-layout {
   padding: 24px;
   background: var(--bg-app);
   z-index: 1;
-  will-change: transform;
+  /* 不常驻 will-change：抽屉动画时浏览器会自动提升图层，
+     常驻会让管理页文字一直走灰度抗锯齿（发虚）。 */
 }
 
 /* 抽屉滑动：只有上面这一层（管理页）在动，主页面停在原位。
@@ -3213,6 +3434,14 @@ html.window-resizing .workspace-layout {
   line-height: 1.2;
 }
 
+/* 流量右侧的两个胶囊按钮（清零 / 统计详情） */
+.traffic-label-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
 .traffic-text-main {
   font-size: 11px;
   font-weight: 500;
@@ -3245,6 +3474,9 @@ html.window-resizing .workspace-layout {
 }
 
 .traffic-audit-btn .audit-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 11px;
   line-height: 1;
   opacity: 0.9;
@@ -3558,7 +3790,8 @@ html.window-resizing .workspace-layout {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  padding: 16px 16px 40px 16px;
+  /* 底部留白收一点：footer 已经加高，避免整体过高出现挤压感 */
+  padding: 16px 16px 24px 16px;
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -4406,7 +4639,8 @@ input[type="checkbox"]:checked {
 .chmod-table th { background: #222631; color: #C4C6D0; }
 
 .modal-footer {
-  height: 48px;
+  /* 48 → 54：原来按钮上下各只剩 ~10px，被上下描边视觉挤压 */
+  height: 54px;
   padding: 0 16px;
   background: var(--bg-card);
   border-top: 1px solid var(--border-card);
@@ -6202,28 +6436,20 @@ body,
   padding: 0 !important;
 }
 
-.btn-exit-fullscreen {
-  position: fixed;
-  right: 18px;
-  bottom: 14px;
-  z-index: 2000;
-  display: flex;
+/* 退出全屏按钮已经并入底部状态栏（原来浮在右下角会盖住命令面板按钮） */
+.status-exit-fs-btn {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border-card);
-  background: var(--bg-modal);
-  color: var(--text-main);
-  font-size: 12px;
-  cursor: pointer;
-  opacity: 0.35;
-  transition: opacity 0.15s ease;
+  gap: 4px;
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
-.btn-exit-fullscreen:hover {
-  opacity: 1;
+.status-exit-fs-btn:hover {
+  background: var(--color-primary);
+  color: var(--color-on-primary);
 }
+
 /* 文件传输不可用提示条 */
 .sftp-file-error {
   display: flex;
@@ -7895,7 +8121,7 @@ body,
 }
 
 .pane-empty:hover {
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--bg-capsule);
   color: var(--text-main);
 }
 
@@ -8097,8 +8323,8 @@ body,
   top: calc(100% + 6px);
   right: 0;
   z-index: 200;
-  min-width: 96px;
-  padding: 4px;
+  min-width: 176px;
+  padding: 6px;
   border-radius: 8px;
   background: var(--bg-modal);
   border: 1px solid var(--border-card);
@@ -8108,11 +8334,22 @@ body,
   gap: 2px;
 }
 
+/* 菜单标题：把「一串文字选项」变成一块面板 */
+.pane-menu-title {
+  padding: 2px 8px 7px;
+  margin-bottom: 3px;
+  border-bottom: 1px solid var(--border-card);
+  font-size: 11px;
+  color: var(--text-sub);
+  letter-spacing: 0.2px;
+  user-select: none;
+}
+
 .pane-menu-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 10px;
+  padding: 7px 8px;
   border: none;
   border-radius: 6px;
   background: transparent;
@@ -8122,39 +8359,77 @@ body,
   text-align: left;
 }
 
+/* 当前布局的勾选标记 */
+.pane-menu-check {
+  margin-left: auto;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--color-primary);
+}
+
 .pane-menu-item:hover {
   background: var(--bg-capsule);
 }
 
 .pane-menu-item.active {
   color: var(--color-primary);
+  background: var(--bg-capsule);
 }
 
+/* 布局缩略图：外框 + 内部分隔线（用伪元素画实线，替代原来几乎看不见的渐变线） */
 .pane-menu-icon {
-  width: 14px;
-  height: 12px;
+  position: relative;
+  width: 20px;
+  height: 15px;
   border: 1px solid currentColor;
   border-radius: 2px;
-  opacity: 0.75;
+  opacity: 0.85;
   flex: none;
 }
 
-.pane-menu-icon.layout-icon-2 {
-  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
+.pane-menu-icon::before,
+.pane-menu-icon::after {
+  content: "";
+  position: absolute;
+  background: currentColor;
+  display: none;
 }
 
-.pane-menu-icon.layout-icon-3 {
-  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%),
-              linear-gradient(to bottom, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
-  background-position: 0 0, 50% 0;
-  background-size: 100% 100%, 50% 100%;
-  background-repeat: no-repeat;
+/* 竖分隔线（2/3/4 屏都有） */
+.pane-menu-icon::before {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  margin-left: -0.5px;
 }
 
-.pane-menu-icon.layout-icon-4 {
-  background: linear-gradient(to right, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%),
-              linear-gradient(to bottom, transparent 47%, currentColor 47%, currentColor 53%, transparent 53%);
-  background-repeat: no-repeat;
+/* 横分隔线（3/4 屏才有） */
+.pane-menu-icon::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  margin-top: -0.5px;
+}
+
+.pane-menu-icon.layout-icon-2::before {
+  display: block;
+}
+
+/* 3 屏是「左一列 + 右侧上下两格」，所以横线只画右半边 */
+.pane-menu-icon.layout-icon-3::before {
+  display: block;
+}
+
+.pane-menu-icon.layout-icon-3::after {
+  display: block;
+  left: 50%;
+}
+
+.pane-menu-icon.layout-icon-4::before,
+.pane-menu-icon.layout-icon-4::after {
+  display: block;
 }
 /* 会话框按窗格区域定位（用 CSS 变量，避开原有 !important 的 100% 宽高） */
 .pane-slot-box {
@@ -8660,13 +8935,19 @@ body,
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
-  background: var(--bg-card);
-  /* 不画 border：border 即使透明也会占位，收起时会漏出几像素的面板底色（灰带）。
-     上下两条线改用 inset 阴影，画在盒子内壁，不参与布局。 */
+  /* 上下两条线用 background 画（不是 border / box-shadow）：
+     不受 is-open 类切换影响，收起动画期间面板还在滑落时线依然在；
+     高度为 0 时背景区域也为 0，不会残留。 */
+  background-color: var(--bg-card);
+  background-image:
+    linear-gradient(var(--border-card), var(--border-card)),
+    linear-gradient(var(--border-card), var(--border-card));
+  background-size: 100% 1px, 100% 1px;
+  background-position: 0 0, 0 100%;
+  background-repeat: no-repeat;
   border: none;
   border-radius: 0;
   box-shadow: none;
-  /* 速率与命令面板完全相同：height 0.8s cubic-bezier(0.4,0,0.2,1) + opacity 0.6s */
   transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.6s ease;
 }
 
@@ -8676,10 +8957,6 @@ body,
   max-height: 60vh;
   opacity: 1;
   pointer-events: auto;
-  /* 上内线 + 下内线（= 原来那条复用主框体颜色的线）；不投外阴影，和命令面板一致 */
-  box-shadow:
-    inset 0 1px 0 var(--border-card),
-    inset 0 -1px 0 var(--border-card);
 }
 
 /* 面板展开时让状态栏的顶线让位，否则面板底边 + 状态栏顶边会叠成 2px。
@@ -8688,16 +8965,20 @@ body,
   border-top-color: transparent;
 }
 
-/* ===== 命令面板：同一套内线机制（不用 border，避免收起时占位漏底色） ===== */
+/* ===== 命令面板：上下两条线改用 background 画 =====
+   之前用 .is-open 上的 inset 阴影：收起时 class 先被移除，面板还在滑落，
+   线就已经消失（"动画中没描边、动画结束才出现"）。
+   background 属于元素自身，不受 class 切换影响，且高度为 0 时自动不可见。 */
 .quick-palette {
   border: none !important;
   box-shadow: none !important;
-}
-
-.quick-palette.is-open {
-  box-shadow:
-    inset 0 1px 0 var(--border-card),
-    inset 0 -1px 0 var(--border-card) !important;
+  background-color: var(--bg-card) !important;
+  background-image:
+    linear-gradient(var(--border-card), var(--border-card)),
+    linear-gradient(var(--border-card), var(--border-card)) !important;
+  background-size: 100% 1px, 100% 1px !important;
+  background-position: 0 0, 0 100% !important;
+  background-repeat: no-repeat !important;
 }
 
 .terminal-viewport.palette-open + .terminal-status-bar {
@@ -8778,24 +9059,11 @@ body,
   color: var(--text-main);
 }
 
+/* 勾选框：直接用项目统一的 input[type=checkbox]（16px / 主色选中 / SVG 对勾），
+   这里只负责网格定位，不再自造方框和对勾字符。 */
 .bp-check {
   grid-area: check;
   align-self: center;
-  width: 16px;
-  height: 16px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  border: 1px solid var(--border-card);
-  font-size: 11px;
-  line-height: 1;
-  color: var(--color-primary);
-}
-
-.bp-target.is-on .bp-check {
-  border-color: var(--color-primary);
-  background: rgba(108, 182, 255, 0.16);
 }
 
 .bp-dot {
@@ -9115,4 +9383,24 @@ body,
   margin-top: 4px;
   font-size: 11px;
   color: #f48771;
+}
+/* ===== 底部抽屉动画期间不要整体半透明 =====
+   opacity 过渡会把面板的 inset 内描边一起淡掉，展开/收起过程中看起来"没有边"，
+   而面板本身有 max-height/height + overflow:hidden，已经能完全隐藏内容，
+   不需要再靠 opacity。 */
+.quick-palette,
+.quick-palette.is-open,
+.broadcast-panel,
+.broadcast-panel.is-open {
+  opacity: 1 !important;
+}
+
+.quick-palette,
+.quick-palette.is-open {
+  transition: max-height 0.8s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.broadcast-panel,
+.broadcast-panel.is-open {
+  transition: height 0.8s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }

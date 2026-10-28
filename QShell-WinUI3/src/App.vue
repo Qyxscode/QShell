@@ -320,6 +320,40 @@ function ensureReadableFg(fg: string, bg: string, fallback: string): string {
   return contrastRatio(fg, bg) < 4.5 ? fallback : fg;
 }
 
+function rgbToHex(rgb: [number, number, number]): string {
+  return (
+    "#" +
+    rgb
+      .map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0"))
+      .join("")
+  );
+}
+
+/**
+ * 用户自定义的文字色在换背景后对比度不足时，**保留色相、只调明度**，
+ * 逐档朝背景的反方向推进，直到对比度达标。
+ * 这样切日夜模式时不会把用户的颜色整个换成预设色（BUG-071）。
+ */
+function adaptForegroundForBg(fg: string, bg: string, fallback: string): string {
+  if (!fg) return fallback;
+  if (contrastRatio(fg, bg) >= 4.5) return fg;
+  const src = hexToRgb(fg) ?? hexToRgb(fallback);
+  if (!src) return fallback;
+  // 深背景往白推，浅背景往黑推
+  const towardWhite = relativeLuminance(bg) <= 0.45;
+  const target: [number, number, number] = towardWhite ? [255, 255, 255] : [0, 0, 0];
+  for (let step = 1; step <= 20; step++) {
+    const k = (step / 20) * 0.92;
+    const candidate = rgbToHex([
+      src[0] + (target[0] - src[0]) * k,
+      src[1] + (target[1] - src[1]) * k,
+      src[2] + (target[2] - src[2]) * k,
+    ]);
+    if (contrastRatio(candidate, bg) >= 4.5) return candidate;
+  }
+  return fallback;
+}
+
 function executeThemeChange() {
   const activePreset = findThemePreset(themePresetId.value);
   const isClassicTheme = activePreset.id === "default" || activePreset.id === "default-light";
@@ -336,7 +370,9 @@ function executeThemeChange() {
   const darkPreset = "#81C995";
   const lightPreset = "#111318";
   const prevMode = terminalSettings.value.term_bg_mode || "dark";
-  const prevFg = (terminalSettings.value.terminal_fg_color || "").trim().toLowerCase();
+  // 用"用户原始选择"判断，而不是当前显示色：显示色可能已经是上一轮派生出来的灰，
+  // 拿它当基准会导致切回原模式时颜色回不去（BUG-071）。
+  const userFg = (userFgColor.value || terminalSettings.value.terminal_fg_color || "").trim().toLowerCase();
   const presetPrev = (prevMode === "dark" ? darkPreset : lightPreset).toLowerCase();
   const targetBg = isDark ? "#0A0B0E" : "#F4F5F7";
   const fallbackFg = isDark ? darkPreset : lightPreset;
@@ -344,13 +380,17 @@ function executeThemeChange() {
   terminalSettings.value.term_bg_mode = isDark ? "dark" : "light";
   terminalSettings.value.terminal_bg_color = targetBg;
 
-  // 预设色或对比度不足时自动兜底，避免白底白字 / 黑底黑字。
-  // 自定义背景图优先根据图片亮度和遮罩自动选字色。
+  // 预设色跟随主题；用户自定义色保留色相、只调明度，原始值始终留在 userFgColor 里
   if (terminalBgImageData.value && terminalSettings.value.bg_image_auto_fg) {
     const effective = terminalBgImageLuminance.value * (1 - terminalSettings.value.bg_image_dim);
     terminalSettings.value.terminal_fg_color = effective < 0.45 ? "#FFFFFF" : "#111318";
-  } else if (!prevFg || prevFg === presetPrev || contrastRatio(prevFg, targetBg) < 4.5) {
+  } else if (!userFg || userFg === presetPrev) {
+    // 仍是主题预设色 → 跟随日/夜切换
     terminalSettings.value.terminal_fg_color = fallbackFg;
+    userFgColor.value = fallbackFg;
+  } else {
+    // 用户自定义色 → 从原始值重新派生，保证来回切换都能还原
+    terminalSettings.value.terminal_fg_color = adaptForegroundForBg(userFg, targetBg, fallbackFg);
   }
 
   applyTerminalSettings(false); // 同步终端外观，但不关闭偏好弹窗
@@ -359,6 +399,7 @@ function executeThemeChange() {
     terminalSettings.value.term_bg_mode = newTheme === "dark" ? "dark" : "light";
     terminalSettings.value.terminal_bg_color = variant.term.background;
     terminalSettings.value.terminal_fg_color = variant.term.foreground;
+    userFgColor.value = variant.term.foreground;
     terminalSettings.value.accent_color = variant.primary;
     applyTerminalSettings(false);
   }
@@ -383,6 +424,8 @@ async function applyThemePreset(id: string, persist = true) {
   terminalSettings.value.term_bg_mode = isDark ? "dark" : "light";
   terminalSettings.value.terminal_bg_color = variant.term.background;
   terminalSettings.value.terminal_fg_color = variant.term.foreground;
+  // 换配色主题 = 重置文字色基准（之后日夜切换从这套主题色派生）
+  userFgColor.value = variant.term.foreground;
   applyTerminalSettings(false);
 
   if (persist && configData.value.settings) {
@@ -454,7 +497,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.86");
+const appVersion = ref("0.99.87");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -969,7 +1012,24 @@ function recordNetworkSample(upText: string, downText: string) {
 
 const showNetIfPicker = ref(false);
 
-// 统计视图：把采样累计值差分回"瞬时速率"，画成带刻度的折线图。
+// 统计视图：把采样累计值差分回"瞬时速率"，按所选时间窗口截取。
+const NET_SAMPLE_MS = 3000; // 与 monitorInterval 一致
+const networkRange = ref<3 | 15 | 60>(3);
+const showNetRangeMenu = ref(false);
+
+const networkRangeShort = computed(() =>
+  networkRange.value >= 60 ? "1h" : `${networkRange.value}m`
+);
+
+const networkRangeLabel = computed(() =>
+  networkRange.value >= 60 ? "1 小时" : `${networkRange.value} 分钟`
+);
+
+function setNetworkRange(minutes: 3 | 15 | 60) {
+  networkRange.value = minutes;
+  showNetRangeMenu.value = false;
+}
+
 const networkRateSeries = computed(() => {
   const samples = networkSamples.value;
   const out: Array<{ up: number; down: number }> = [];
@@ -980,32 +1040,67 @@ const networkRateSeries = computed(() => {
       down: Math.max(0, (samples[i].down - samples[i - 1].down) / dt),
     });
   }
-  return out.slice(-60);
+  const count = Math.round((networkRange.value * 60 * 1000) / NET_SAMPLE_MS);
+  return out.slice(-count);
 });
 
-const networkRateMax = computed(() => {
-  let max = 0;
-  for (const point of networkRateSeries.value) {
-    max = Math.max(max, point.up, point.down);
+/** 刻度取整到 1 / 2 / 5 × 10^n，避免出现 "1.37 MB/s" 这种刻度 */
+function niceSpeedCeil(value: number): number {
+  if (!(value > 0)) return 1024; // 全 0 时给 1 KB/s 的上界，避免除零
+  const exp = Math.pow(10, Math.floor(Math.log10(value)));
+  const n = value / exp;
+  const step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10;
+  return step * exp;
+}
+
+/**
+ * Y 轴上限用 P95 而不是最大值：一次突发尖峰会把最大值顶得很高，
+ * 其余时间全被压成贴底的一条线（之前"数据不明显"的主因）。
+ */
+const networkRateCeil = computed(() => {
+  const series = networkRateSeries.value;
+  if (!series.length) return 1024;
+  const values: number[] = [];
+  for (const p of series) {
+    values.push(p.up, p.down);
   }
-  return max > 0 ? max : 1;
+  values.sort((a, b) => a - b);
+  const idx = Math.min(values.length - 1, Math.floor(values.length * 0.95));
+  return niceSpeedCeil(values[idx]);
 });
+
+/** 窗口内峰值，用于右上角标注（尖峰允许冲出图表顶部） */
+const networkPeak = computed(() => {
+  let up = 0;
+  let down = 0;
+  for (const p of networkRateSeries.value) {
+    if (p.up > up) up = p.up;
+    if (p.down > down) down = p.down;
+  }
+  return { up, down };
+});
+
+const NET_CHART_H = 40;
 
 function buildNetworkPolyline(key: "up" | "down"): string {
   const series = networkRateSeries.value;
   if (series.length < 2) return "";
-  const max = networkRateMax.value;
-  const x0 = 28;
-  const x1 = 224;
-  const baseline = 60;
-  const plotHeight = 48;
+  const max = networkRateCeil.value;
   return series
     .map((point, index) => {
-      const x = x0 + (index / (series.length - 1)) * (x1 - x0);
-      const y = baseline - (point[key] / max) * plotHeight;
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
+      const x = (index / (series.length - 1)) * 100;
+      const ratio = Math.min(point[key] / max, 1);
+      const y = NET_CHART_H - ratio * NET_CHART_H;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(" ");
+}
+
+/** 面积填充：折线闭合到底边 */
+function buildNetworkArea(key: "up" | "down"): string {
+  const line = buildNetworkPolyline(key);
+  if (!line) return "";
+  return `M0,${NET_CHART_H} L${line.replace(/ /g, " L")} L100,${NET_CHART_H} Z`;
 }
 
 
@@ -1444,6 +1539,10 @@ function handleGlobalClick(e: MouseEvent) {
   // 点击分屏布局菜单外部时收起
   if (showPaneMenu.value && !target.closest(".pane-menu-wrap")) {
     showPaneMenu.value = false;
+  }
+  // 网络统计的时间范围菜单同理
+  if (showNetRangeMenu.value && !target.closest(".net-range-wrap")) {
+    showNetRangeMenu.value = false;
   }
   // 点击非通知气泡及非通知按钮区域时，自动收起通知气泡
   if (showAlertPopover.value) {
@@ -1893,7 +1992,10 @@ const memoEditModal = ref({
 });
 
 // 7. 终端偏好与备份设置模态框 (1:1 严格对标 ssh8.py TerminalSettingsDialog)
-const defaultGlobalFont = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif';
+// 西文 Segoe UI Variable/Segoe UI，中文微软雅黑 UI（显式指定，避免回退宋体）
+const defaultGlobalFont = '"Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, -apple-system, "PingFang SC", sans-serif';
+// 旧版本的默认字体栈：加载配置时自动迁移，否则老用户会一直用旧栈
+const LEGACY_DEFAULT_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", sans-serif';
 const appFontFamily = ref(defaultGlobalFont);
 const terminalSettings = ref({
   font_family: "Consolas",
@@ -1916,6 +2018,18 @@ const terminalBgImageData = ref("");
 const terminalBgImageLuminance = ref(0);
 const showTerminalSettingsModal = ref(false);
 const autostartEnabled = ref(false);
+
+/**
+ * 用户原始选择的终端文字色（"派生"之前的基准）。
+ * terminal_fg_color 是"当前实际显示色"，切换日夜时会被压/提明度；
+ * 如果拿显示色当基准，切回来就再也回不到用户原本选的颜色了（BUG-071）。
+ */
+const userFgColor = ref("");
+
+function setTerminalFgColor(color: string) {
+  terminalSettings.value.terminal_fg_color = color;
+  userFgColor.value = color;
+}
 
 // --- 路由追踪 ---
 interface TraceHop {
@@ -2100,30 +2214,41 @@ function visiblePaneSessionIds(): string[] {
   return ids;
 }
 
-// 命令面板开合：动画期间冻结所有可见窗格的重排，动画结束后统一适配
-watch(() => commandPalette.value.open, () => {
+/**
+ * 面板开合动画期间逐帧 fit：
+ * 面板高度动画有 0.8s，终端区会跟着变高变矮，如果只在动画结束 fit 一次，
+ * 中间这段时间 xterm canvas 还是旧尺寸，终端底部会露出一截容器底色，
+ * 面板顶部那条线也就跟着"离开"了终端底部。
+ * 只在动画期间本地 fit，结束时统一发一次 resize，避免每帧给远端 PTY 发窗口大小。
+ */
+function fitPanesDuringPanelAnimation(durationMs = 820) {
   const ids = visiblePaneSessionIds();
-  ids.forEach(sid => {
-    const t = sessions.value.find(s => s.id === sid);
-    if (t) t.paletteAnimating = true;
-  });
-  window.setTimeout(() => {
-    ids.forEach(sid => {
+  const start = performance.now();
+  const step = (now: number) => {
+    for (const sid of ids) {
       const t = sessions.value.find(s => s.id === sid);
-      if (!t) return;
-      t.paletteAnimating = false;
-      t.fitInstance?.fit();
-      if (t.termInstance) {
+      if (!t?.fitInstance) continue;
+      try {
+        t.fitInstance.fit();
+      } catch (_) {}
+    }
+    if (now - start < durationMs) {
+      requestAnimationFrame(step);
+      return;
+    }
+    for (const sid of ids) {
+      const t = sessions.value.find(s => s.id === sid);
+      if (t?.termInstance) {
         sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
       }
-    });
-    window.setTimeout(() => {
-      ids.forEach(sid => {
-        const t2 = sessions.value.find(s => s.id === sid);
-        t2?.fitInstance?.fit();
-      });
-    }, 600);
-  }, 320);
+    }
+  };
+  requestAnimationFrame(step);
+}
+
+// 命令面板开合：动画期间逐帧适配，结束后统一通知远端
+watch(() => commandPalette.value.open, () => {
+  fitPanesDuringPanelAnimation(820);
 });
 function movePaletteSelection(delta: number) {
   const list = paletteFiltered.value;
@@ -2307,17 +2432,9 @@ async function sendBroadcast() {
   }
 }
 
-// 抽屉开合会改变终端可见高度，动画结束后统一重排一次
-watch(showBroadcastPanel, (open) => {
-  const ids = visiblePaneSessionIds();
-  window.setTimeout(() => {
-    ids.forEach(sid => {
-      const t = sessions.value.find(s => s.id === sid);
-      if (!t?.fitInstance) return;
-      t.fitInstance.fit();
-      if (t.termInstance) sendTerminalResize(t, t.termInstance.cols, t.termInstance.rows);
-    });
-  }, open ? 820 : 820);
+// 抽屉开合会改变终端可见高度：动画期间逐帧适配，结束后统一通知远端
+watch(showBroadcastPanel, () => {
+  fitPanesDuringPanelAnimation(820);
 });
 
 function runPaletteItem(item: PaletteItem) {
@@ -2559,8 +2676,10 @@ function getDisplayFontName(fontStr: string) {
 }
 
 function applyAppFont(font: string) {
-  appFontFamily.value = font || defaultGlobalFont;
-  document.documentElement.style.setProperty("--app-font-family", appFontFamily.value);
+  // 旧默认栈（-apple-system 开头）在 Windows 上中文会回退宋体，统一升级为新栈
+  const normalized = !font || font === LEGACY_DEFAULT_FONT ? defaultGlobalFont : font;
+  appFontFamily.value = normalized;
+  document.documentElement.style.setProperty("--app-font-family", normalized);
 }
 
 // 常见备选系统字体检测表 (含各类中英文常用字族)
@@ -4935,6 +5054,8 @@ async function loadConfig() {
       const storedBgMode = cfg.settings.terminal_bg_mode || cfg.settings.term_bg_mode;
       if (storedBgMode) terminalSettings.value.term_bg_mode = storedBgMode as any;
       if (cfg.settings.terminal_fg_color) terminalSettings.value.terminal_fg_color = cfg.settings.terminal_fg_color;
+      // 用户原始文字色（派生前的值）：老配置没有这个字段就退回当前显示色
+      userFgColor.value = cfg.settings.terminal_fg_user_color || cfg.settings.terminal_fg_color || "";
       if (cfg.settings.terminal_bg_color) terminalSettings.value.terminal_bg_color = cfg.settings.terminal_bg_color;
       if (cfg.settings.minimize_to_tray !== undefined) terminalSettings.value.minimize_to_tray = !!cfg.settings.minimize_to_tray;
       if (cfg.settings.autostart_enabled !== undefined) autostartPreferred.value = !!cfg.settings.autostart_enabled;
@@ -4994,10 +5115,10 @@ function setTerminalBgPreset(mode: "dark" | "light") {
   terminalSettings.value.term_bg_mode = mode;
   if (mode === "dark") {
     terminalSettings.value.terminal_bg_color = "#0A0B0E";
-    terminalSettings.value.terminal_fg_color = "#81C995";
+    setTerminalFgColor("#81C995");
   } else {
     terminalSettings.value.terminal_bg_color = "#F4F5F7";
-    terminalSettings.value.terminal_fg_color = "#111318";
+    setTerminalFgColor("#111318");
   }
 }
 
@@ -5314,6 +5435,8 @@ function applyTerminalSettings(closeModal: boolean | MouseEvent = true) {
   configData.value.settings.blink_interval = terminalSettings.value.blink_interval;
   configData.value.settings.terminal_bg_mode = terminalSettings.value.term_bg_mode;
   configData.value.settings.terminal_fg_color = fgCol;
+  // 记住用户原始选择：主题切换时用它重新派生显示色，而不是拿派生结果当基准
+  configData.value.settings.terminal_fg_user_color = userFgColor.value || fgCol;
   configData.value.settings.terminal_bg_color = bgCol;
   configData.value.settings.custom_bg_image = terminalSettings.value.custom_bg_image;
   configData.value.settings.terminal_bg_image = terminalSettings.value.custom_bg_image;
@@ -8287,15 +8410,6 @@ onUnmounted(() => {
 <template>
   <div :class="['app-root', terminalFullscreen ? 'is-terminal-fullscreen' : '']" @contextmenu="handleAppContextMenu">
     <!-- 顶部标题栏 (1:1 像素级复刻原版设计) -->
-    <button
-      v-if="terminalFullscreen"
-      class="btn-exit-fullscreen"
-      @click="toggleTerminalFullscreen"
-      title="退出全屏 (F11 / Esc)"
-    >
-      <Icons name="close" size="12" />
-      <span>退出全屏</span>
-    </button>
     <header class="title-bar" @mousedown="startDragging" @dblclick="onTitleBarDoubleClick">
       <div class="brand">
         <span class="logo-title">QShell</span>
@@ -8316,6 +8430,8 @@ onUnmounted(() => {
           {{ currentView === 'mgmt' ? '返回主页' : '主机管理' }}
         </button>
 
+        <!-- 功能按钮组：整排嵌在一个"凹陷槽"里，按钮本身仍是浮起的 -->
+        <div class="top-actions-slot">
         <button class="top-icon-btn" :title="themeMode === 'dark' ? '切换为浅色模式' : '切换为深色模式'" @click="toggleTheme($event)">
           <Icons :name="themeMode === 'dark' ? 'moon' : 'sun'" size="24" />
         </button>
@@ -8337,22 +8453,29 @@ onUnmounted(() => {
           <Icons name="arrows" size="24" />
         </button>
 
-        <button 
-          :class="['top-icon-btn', forwardModal.show ? 'active' : '']"
-          :disabled="!activeSession || activeSession.host?.protocol !== 'ssh'"
-          @click="openForwardModal"
-          title="端口转发（本地转发）"
-        >
-          <Icons name="bolt" size="24" />
-        </button>
+        <!-- 只有 SSH 会话才用得到，非 SSH / 无会话时不占位 -->
+        <Transition name="action-btn">
+          <button 
+            v-if="activeSession && activeSession.host?.protocol === 'ssh'"
+            :class="['top-icon-btn', forwardModal.show ? 'active' : '']"
+            @click="openForwardModal"
+            title="端口转发（本地转发）"
+          >
+            <Icons name="bolt" size="24" />
+          </button>
+        </Transition>
 
-        <button
-          :class="['top-icon-btn', terminalFullscreen ? 'active' : '']"
-          @click="toggleTerminalFullscreen"
-          title="终端全屏 (F11)"
-        >
-          <Icons name="fullscreen" size="20" />
-        </button>
+        <!-- 没有会话时全屏没有意义，不占位 -->
+        <Transition name="action-btn">
+          <button
+            v-if="activeSession"
+            :class="['top-icon-btn', terminalFullscreen ? 'active' : '']"
+            @click="toggleTerminalFullscreen"
+            title="终端全屏 (F11)"
+          >
+            <Icons name="fullscreen" size="20" />
+          </button>
+        </Transition>
 
         <div class="pane-menu-wrap">
           <button
@@ -8364,6 +8487,7 @@ onUnmounted(() => {
             <span class="split-count">{{ paneLayout }}</span>
           </button>
           <div v-if="showPaneMenu" class="pane-menu">
+            <div class="pane-menu-title">终端布局</div>
             <button
               v-for="n in [1, 2, 3, 4]"
               :key="n"
@@ -8372,6 +8496,7 @@ onUnmounted(() => {
             >
               <span class="pane-menu-icon" :class="'layout-icon-' + n"></span>
               <span>{{ n }} 屏</span>
+              <span v-if="paneLayout === n" class="pane-menu-check">✓</span>
             </button>
           </div>
         </div>
@@ -8391,6 +8516,7 @@ onUnmounted(() => {
         >
           <Icons name="panel" size="24" />
         </button>
+        </div>
 
         <!-- 窗口原生控制按钮 (34px × 30px，1.6px 饱满线宽) -->
         <div class="window-controls">
@@ -8565,23 +8691,54 @@ onUnmounted(() => {
               </div>
             </div>
             <div v-else class="net-stats-view">
-              <div class="net-stats-legend">
+              <div class="net-stats-head">
                 <span class="net-stats-up">↑ {{ monitorStats.net_up }}</span>
                 <span class="net-stats-down">↓ {{ monitorStats.net_down }}</span>
+                <div class="net-range-wrap" @click.stop>
+                  <button class="net-range-btn" :title="'统计范围：' + networkRangeLabel" @click="showNetRangeMenu = !showNetRangeMenu">
+                    {{ networkRangeShort }} ▾
+                  </button>
+                  <Transition name="pane-menu-fade">
+                    <div v-if="showNetRangeMenu" class="net-range-menu">
+                      <button
+                        v-for="r in [3, 15, 60]"
+                        :key="r"
+                        :class="['net-range-item', networkRange === r ? 'active' : '']"
+                        @click="setNetworkRange(r as 3 | 15 | 60)"
+                      >{{ r }} 分钟</button>
+                    </div>
+                  </Transition>
+                </div>
               </div>
               <div class="net-stats-chart">
-                <svg viewBox="0 0 230 80" preserveAspectRatio="none" class="net-chart-svg">
-                  <line x1="28" y1="6" x2="224" y2="6" class="chart-grid" />
-                  <line x1="28" y1="33" x2="224" y2="33" class="chart-grid" />
-                  <line x1="28" y1="60" x2="224" y2="60" class="chart-grid chart-axis" />
-                  <text x="24" y="9" text-anchor="end" class="chart-tick">{{ formatAxisSpeed(networkRateMax) }}</text>
-                  <text x="24" y="36" text-anchor="end" class="chart-tick">{{ formatAxisSpeed(networkRateMax / 2) }}</text>
-                  <text x="24" y="63" text-anchor="end" class="chart-tick">0</text>
-                  <polyline :points="buildNetworkPolyline('up')" class="chart-line-up" />
-                  <polyline :points="buildNetworkPolyline('down')" class="chart-line-down" />
-                  <text x="28" y="74" class="chart-tick">-3m</text>
-                  <text x="224" y="74" text-anchor="end" class="chart-tick">现在</text>
+                <!-- 文字不再画进 SVG：preserveAspectRatio="none" 会把字一起拉伸，
+                     而且 Y 轴刻度会吃掉左侧一整列，导致图形区缩在右边 -->
+                <svg viewBox="0 0 100 40" preserveAspectRatio="none" class="net-chart-svg">
+                  <defs>
+                    <linearGradient id="netGradUp" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#78D9EC" stop-opacity="0.38" />
+                      <stop offset="100%" stop-color="#78D9EC" stop-opacity="0" />
+                    </linearGradient>
+                    <linearGradient id="netGradDown" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#81C995" stop-opacity="0.34" />
+                      <stop offset="100%" stop-color="#81C995" stop-opacity="0" />
+                    </linearGradient>
+                  </defs>
+                  <line x1="0" y1="10" x2="100" y2="10" class="chart-grid" vector-effect="non-scaling-stroke" />
+                  <line x1="0" y1="20" x2="100" y2="20" class="chart-grid" vector-effect="non-scaling-stroke" />
+                  <line x1="0" y1="30" x2="100" y2="30" class="chart-grid" vector-effect="non-scaling-stroke" />
+                  <path :d="buildNetworkArea('up')" fill="url(#netGradUp)" />
+                  <path :d="buildNetworkArea('down')" fill="url(#netGradDown)" />
+                  <polyline :points="buildNetworkPolyline('up')" class="chart-line-up" vector-effect="non-scaling-stroke" />
+                  <polyline :points="buildNetworkPolyline('down')" class="chart-line-down" vector-effect="non-scaling-stroke" />
                 </svg>
+                <div class="net-chart-axis">
+                  <span>-{{ networkRangeShort }}</span>
+                  <span class="net-chart-peak">
+                    峰值 ↑{{ formatAxisSpeed(networkPeak.up) }} ↓{{ formatAxisSpeed(networkPeak.down) }}
+                  </span>
+                  <span>现在</span>
+                </div>
               </div>
             </div>
           </div>
@@ -8791,7 +8948,7 @@ onUnmounted(() => {
               <div
                 v-for="tab in sessions"
                 :key="'status-' + tab.id"
-                v-show="paneKeyOfSession(tab.id)"
+                v-show="paneLayout > 1 && !!paneKeyOfSession(tab.id)"
                 class="pane-status-overlay"
                 :style="paneBoxStyle(tab.id)"
               >
@@ -8887,7 +9044,14 @@ onUnmounted(() => {
                 :class="['bp-target', broadcastSelected.includes(tab.id) ? 'is-on' : '']"
                 @click="toggleBroadcastTarget(tab.id)"
               >
-                <span class="bp-check">{{ broadcastSelected.includes(tab.id) ? '✓' : '' }}</span>
+                <input
+                  type="checkbox"
+                  class="bp-check"
+                  :checked="broadcastSelected.includes(tab.id)"
+                  tabindex="-1"
+                  @click.stop
+                  @change="toggleBroadcastTarget(tab.id)"
+                />
                 <i class="bp-dot" :style="{ background: broadcastPaneColor(tab.id) }"></i>
                 <span class="bp-name">{{ tab.name }}</span>
                 <span class="bp-pane" v-if="broadcastPaneLabel(tab.id)">{{ broadcastPaneLabel(tab.id) }}</span>
@@ -8937,6 +9101,15 @@ onUnmounted(() => {
   </button>
   <button class="status-cmd-btn" @click="toggleCommandPalette" title="命令面板 (Ctrl+K)">
   ⌘ 命令面板
+  </button>
+  <button
+    v-if="terminalFullscreen"
+    class="status-cmd-btn status-exit-fs-btn"
+    @click="toggleTerminalFullscreen"
+    title="退出全屏 (F11 / Esc)"
+  >
+  <Icons name="close" size="11" />
+  <span>退出全屏</span>
   </button>
   </div>
           <Transition name="modal-fade">
@@ -9219,7 +9392,7 @@ onUnmounted(() => {
         <div class="mgmt-header">
           <div>
             <h2 class="mgmt-title">综合主机管理</h2>
-            <span class="mgmt-sub">支持实时流量审计、结算日重置与莫比乌斯微光轨道展示</span>
+            <span class="mgmt-sub">支持实时流量审计、结算日重置</span>
           </div>
           <div class="mgmt-actions-row">
             <!-- 每行卡片数选择器 (1-3 列) -->
@@ -9295,15 +9468,26 @@ onUnmounted(() => {
               <div class="traffic-section">
                 <div class="traffic-label">
                   <span class="traffic-text-main">流量: {{ h.details?.traffic_used || '0' }}{{ h.details?.traffic_used_unit || 'GB' }} / {{ h.details?.traffic_total_infinite ? '无限 (∞)' : `${h.details?.traffic_total || '0'}${h.details?.traffic_total_unit || 'GB'}` }}</span>
-                  <button 
-                    type="button" 
-                    class="traffic-audit-btn" 
-                    @click.stop="openTrafficStatsModal(h)" 
-                    title="点击打开流量详细统计与校准窗口"
-                  >
-                    <span class="audit-icon">⚙</span>
-                    <span class="audit-text">统计详情</span>
-                  </button>
+                  <div class="traffic-label-actions">
+                    <button 
+                      type="button" 
+                      class="traffic-audit-btn" 
+                      @click.stop="resetTrafficCounter(h)" 
+                      title="重置已用流量为 0（不会改动总配额）"
+                    >
+                      <span class="audit-icon"><Icons name="refresh" size="11" /></span>
+                      <span class="audit-text">清零</span>
+                    </button>
+                    <button 
+                      type="button" 
+                      class="traffic-audit-btn" 
+                      @click.stop="openTrafficStatsModal(h)" 
+                      title="点击打开流量详细统计与校准窗口"
+                    >
+                      <span class="audit-icon">⚙</span>
+                      <span class="audit-text">统计详情</span>
+                    </button>
+                  </div>
                 </div>
 
                 <!-- 无限流量：优雅呼吸流光条 -->
@@ -9327,7 +9511,6 @@ onUnmounted(() => {
                   <button class="btn-card-act btn-primary btn-ssh" @click="openSession(h)">打开 SSH</button>
                   <button class="btn-card-act btn-tcp" @click="testLatency(h, 'tcp')">TCP</button>
                   <button class="btn-card-act btn-icmp" @click="testLatency(h, 'icmp')">ICMP</button>
-                  <button class="btn-card-act btn-reset" @click="resetTrafficCounter(h)" title="重置已用流量为 0">清零</button>
                   <button class="btn-card-act btn-edit" @click="openEditHostModal(h, 'asset')">编辑</button>
                 </div>
                 <div class="card-actions-right">
@@ -10897,7 +11080,7 @@ onUnmounted(() => {
                 type="button"
                 :class="['color-swatch-btn', terminalSettings.terminal_fg_color.toLowerCase() === c.toLowerCase() ? 'active' : '']"
                 :style="{ backgroundColor: c }"
-                @click="terminalSettings.terminal_fg_color = c"
+                @click="setTerminalFgColor(c)"
                 :title="c"
               ></button>
               <!-- 自定义取色按钮 -->
@@ -10905,7 +11088,7 @@ onUnmounted(() => {
                 :model-value="terminalSettings.terminal_fg_color"
                 :presets="terminalSettings.term_bg_mode === 'dark' ? darkPresetColors : lightPresetColors"
                 title="自定义终端文字颜色"
-                @update:model-value="terminalSettings.terminal_fg_color = $event"
+                @update:model-value="setTerminalFgColor($event)"
               />
             </div>
           </div>
