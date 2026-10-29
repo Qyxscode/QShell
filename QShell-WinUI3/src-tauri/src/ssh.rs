@@ -86,8 +86,22 @@ impl Clone for SftpHandle {
     }
 }
 
+/// 所有涉及 SSH 通道的操作都排进这个队列，由唯一的 IO 线程串行执行。
+///
+/// libssh2 的 session 不是线程安全的：即使对 channel 加锁，读线程和写线程
+/// 交替进入 transport 层仍有可能把内部状态搞坏 —— 网络抖动时表现为
+/// "读取失败: transport read"，以及数据流错位导致的光标漂移。
+/// 改成「单 IO 线程 + 命令队列」后，读写永远在同一个线程里发生。
+pub enum ChannelCommand {
+    Write(Vec<u8>),
+    Resize(u32, u32),
+    Close,
+}
+
 pub struct ActiveSession {
     pub channel: Arc<Mutex<ssh2::Channel>>,
+    /// 发往 IO 线程的命令队列
+    pub tx: std::sync::mpsc::Sender<ChannelCommand>,
     // Keeps the interactive SSH session alive for the lifetime of its channel.
     #[allow(dead_code)]
     pub session: Arc<Mutex<ssh2::Session>>,
@@ -385,11 +399,15 @@ pub async fn start_ssh_session(
         let channel_arc = Arc::new(Mutex::new(channel));
         let sess_arc = Arc::new(Mutex::new(sess));
 
+        // 命令队列：写 / 改尺寸 / 关闭都交给 IO 线程串行执行
+        let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<ChannelCommand>();
+
         // 注册会话
         sessions_map.lock().insert(
             session_id.clone(),
             ActiveSession {
                 channel: channel_arc.clone(),
+                tx: cmd_tx,
                 session: sess_arc,
                 sftp: sftp_slot,
                 monitor: monitor_slot,
@@ -397,8 +415,9 @@ pub async fn start_ssh_session(
             },
         );
 
-        // 输出读取线程（对标 ssh8.py _ssh_session_reader：合并小块输出，降低 IPC 频率）
-        let read_channel = channel_arc.clone();
+        // 单一 IO 线程：读写 + 改尺寸 + 关闭全部在这里串行执行，
+        // 避免 libssh2 session 被多线程交替访问（网络抖动时会导致 transport 层错乱）。
+        let io_channel = channel_arc.clone();
         let cleanup_channel = channel_arc.clone();
         let cleanup_sessions = sessions_map.clone();
         let app_handle = app.clone();
@@ -407,18 +426,77 @@ pub async fn start_ssh_session(
         std::thread::spawn(move || {
             let mut buf = [0u8; 32768];
             let mut pending = String::new();
+            // 断开原因：传给前端显示，便于判断是远端退出、网络问题还是内部错误
+            let mut close_reason = String::from("远端结束了会话");
             // 按 UTF-8 边界解码：直接对每个 32KB 块做 from_utf8_lossy 会把
             // 跨块的中文字符拆坏成 U+FFFD（终端显示方块）。
             let mut decoder = crate::generic_terminal::generic_session::Utf8ChunkDecoder::new();
             let mut last_emit = std::time::Instant::now();
+            // 网络抖动（丢包/高延迟）时 libssh2 会冒出短暂错误（例如 transport read）。
+            // 旧逻辑一遇到非 WouldBlock 的错误就 break，等于把一次抖动当成断线处理；
+            // 现在给它一个容忍窗口：连续出错超过约 2 秒才真正放弃。
+            let mut consecutive_errors = 0u32;
+            // 待写入远端的数据：非阻塞写可能只写出去一部分，剩下的下一轮继续
+            let mut out_buf: Vec<u8> = Vec::new();
+            let mut pending_resize: Option<(u32, u32)> = None;
             loop {
+                // ---- 1. 处理命令队列（写 / 改尺寸 / 关闭）----
+                let mut want_close = false;
+                loop {
+                    match cmd_rx.try_recv() {
+                        Ok(ChannelCommand::Write(bytes)) => out_buf.extend_from_slice(&bytes),
+                        Ok(ChannelCommand::Resize(c, r)) => pending_resize = Some((c, r)),
+                        Ok(ChannelCommand::Close) => want_close = true,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            want_close = true;
+                            break;
+                        }
+                    }
+                }
+                if want_close {
+                    close_reason = String::from("本地关闭了会话");
+                    break;
+                }
+
+                // ---- 2. 应用尺寸变更（EAGAIN 时下一轮继续）----
+                if let Some((c, r)) = pending_resize {
+                    let mut ch = io_channel.lock();
+                    match ch.request_pty_size(c, r, None, None) {
+                        Ok(()) => pending_resize = None,
+                        Err(ref e) if matches!(e.code(), ssh2::ErrorCode::Session(-37)) => {}
+                        Err(_) => pending_resize = None,
+                    }
+                }
+
+                // ---- 3. 写（与读同线程，不存在并发访问）----
+                if !out_buf.is_empty() {
+                    let mut ch = io_channel.lock();
+                    match ch.write(&out_buf) {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            out_buf.drain(..n);
+                        }
+                        Err(ref e)
+                            if matches!(
+                                e.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                            ) => {}
+                        Err(_) => out_buf.clear(),
+                    }
+                }
+
                 let read_res = {
-                    let mut ch = read_channel.lock();
+                    let mut ch = io_channel.lock();
                     ch.read(&mut buf)
                 };
                 match read_res {
-                    Ok(0) => break,
+                    Ok(0) => {
+                        close_reason = String::from("远端结束了会话");
+                        break;
+                    }
                     Ok(n) => {
+                        consecutive_errors = 0;
                         pending.push_str(&decoder.decode(&buf[..n]));
                         if pending.len() >= 64 * 1024
                             || last_emit.elapsed() >= terminal_flush_interval(pending.len())
@@ -442,14 +520,38 @@ pub async fn start_ssh_session(
                         }
                         std::thread::sleep(std::time::Duration::from_millis(2));
                     }
-                    Err(_) => break,
+                    // 非阻塞模式下偶发的中断/超时不是致命错误：
+                    // 高频输入（比如长按 Ctrl+←/→）时读写线程抢同一把锁，
+                    // 旧逻辑会在这里直接 break，把整个会话当成断开处理。
+                    Err(ref e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(ref e) => {
+                        consecutive_errors += 1;
+                        if consecutive_errors > 200 {
+                            close_reason = format!("读取失败: {}", e);
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
                 }
             }
             if !pending.is_empty() {
                 crate::session_log::log_chunk(&sid, &pending);
                 let _ = app_handle.emit(&format!("ssh-data-{}", sid), pending);
             }
-            let _ = app_handle.emit(&format!("ssh-closed-{}", sid), ());
+            // 关闭通道（非阻塞下可能失败，忽略即可）
+            {
+                let mut ch = io_channel.lock();
+                let _ = ch.close();
+            }
+            // 把断开原因一起带出去，前端能直接显示，省得只能看到「连接已断开」
+            let _ = app_handle.emit(&format!("ssh-closed-{}", sid), close_reason);
 
             // The shell exited or the channel died. Drop this session (including
             // its separate SFTP/monitor connections) immediately, but only if it
@@ -481,32 +583,14 @@ pub fn write_ssh_session(
     session_id: String,
     data: String,
 ) -> Result<(), String> {
-    if let Some(active) = state.sessions.lock().get(&session_id) {
-        let mut ch = active.channel.lock();
-        // 会话被设为非阻塞，write_all 遇到 WouldBlock 会直接失败并丢数据；
-        // 这里改为循环写入 + 超时，粘贴大段文本时才不会半途而废。
-        let bytes = data.as_bytes();
-        let mut offset = 0usize;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while offset < bytes.len() {
-            match ch.write(&bytes[offset..]) {
-                Ok(0) => return Err("写入终端失败：远端通道已关闭".to_string()),
-                Ok(n) => offset += n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    if std::time::Instant::now() > deadline {
-                        return Err("写入终端超时：远端暂时无法接收数据".to_string());
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-                Err(e) => return Err(format!("写入终端失败: {}", e)),
-            }
-        }
-        // flush 同样可能 WouldBlock，此时数据已写入通道，忽略即可。
-        let _ = ch.flush();
-        Ok(())
-    } else {
-        Err("SSH session not found".to_string())
-    }
+    // 不再直接操作通道：排进 IO 线程的命令队列，由它串行写入。
+    // 这样写永远和读在同一个线程里发生，libssh2 的 session 不会被并发访问。
+    let tx = match state.sessions.lock().get(&session_id) {
+        Some(active) => active.tx.clone(),
+        None => return Err("SSH session not found".to_string()),
+    };
+    tx.send(ChannelCommand::Write(data.into_bytes()))
+        .map_err(|_| "会话已关闭，无法写入".to_string())
 }
 
 #[tauri::command]
@@ -516,13 +600,13 @@ pub fn resize_ssh_session(
     cols: u32,
     rows: u32,
 ) -> Result<(), String> {
-    if let Some(active) = state.sessions.lock().get(&session_id) {
-        let mut ch = active.channel.lock();
-        ch.request_pty_size(cols, rows, None, None).map_err(|e| format!("调整 PTY 尺寸失败: {}", e))?;
-        Ok(())
-    } else {
-        Err("SSH session not found".to_string())
-    }
+    // 尺寸变更同样排队，由 IO 线程在两次读取之间应用
+    let tx = match state.sessions.lock().get(&session_id) {
+        Some(active) => active.tx.clone(),
+        None => return Err("SSH session not found".to_string()),
+    };
+    tx.send(ChannelCommand::Resize(cols, rows))
+        .map_err(|_| "会话已关闭，无法调整尺寸".to_string())
 }
 
 #[tauri::command]
@@ -532,8 +616,8 @@ pub fn close_ssh_session(
 ) -> Result<(), String> {
     crate::monitor::clear_session_caches(&session_id);
     if let Some(active) = state.sessions.lock().remove(&session_id) {
-        let mut ch = active.channel.lock();
-        ch.close().ok();
+        // 通知 IO 线程收尾（它会关闭通道并清理会话）
+        let _ = active.tx.send(ChannelCommand::Close);
         Ok(())
     } else {
         Ok(())
