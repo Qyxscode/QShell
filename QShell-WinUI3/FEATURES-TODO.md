@@ -241,3 +241,40 @@
 - **终端链接可点击**：`registerLinkProvider` 识别 URL / IPv4(:port) / 绝对路径（≥2 级），Ctrl+点击：URL 用系统浏览器打开（失败回退复制），IP 与路径复制到剪贴板。列号用逐 cell 换算（`startCol[] + charWidth[]`），中文行不会错位。
 - **输出高亮**：偏好设置「字体加粗」同行新增「输出高亮」开关（默认开，存 `settings.output_highlight`）。规则 ERROR/FATAL/CRITICAL/FAILED/FAILURE→亮红，WARN/WARNING→亮黄，OK/SUCCESS/SUCCEEDED/DONE→亮绿。**逐行**处理：含 ANSI 的行原样跳过（不破坏程序自带配色），>8KB 的片段不处理（避免 cat 大文件卡顿），只重置前景色 `\x1b[39m`。
 - **快捷键一览 / 自定义**：❌ 不做（2026-10-29 用户决定）。现有 7 条快捷键（F11、Esc、Ctrl+K、Ctrl+F、Ctrl+Shift+C/V、Alt+1~4）对终端用户已是肌肉记忆，指示卡与改键都属多余。
+---
+
+## 26. Android 版（已立项，待启动 —— 2026-10-29 评估）
+
+**状态**：📌 已定下来要做，启动时间由用户决定（2026-10-29 用户："安卓版先定下，至于多久开始，到时候我会说"）
+
+**可行性结论**：Tauri 2 官方支持 Android（7.0 / API 24+），前端可复用 80%，后端 Rust 可复用 80%。
+
+**后端依赖盘点（基于当前 Cargo.toml）**
+
+| 模块 | Android | 处理 |
+|---|---|---|
+| SSH 主协议（`ssh2` + vendored-openssl） | ⚠️ 最大卡点 | 交叉编译 OpenSSL，或迁移到纯 Rust 的 `russh` + `rustls`（推荐，2~3 周） |
+| SFTP / 端口转发 / Telnet / RLogin / Raw | ✅ | 跟随 SSH 通道 |
+| 监控、流量审计、备份、加密 | ✅ | 纯 Rust |
+| 本地终端（`portable-pty`） | ❌ | Android 无 fork/pty，砍掉 |
+| 串口（`serialport`） | ❌ | 需要 USB OTG 专用库，砍掉 |
+| 路由追踪 | ⚠️ | raw socket 需 root，改为调用 `ping` 子进程 |
+| 托盘 / 自启 / 更新 / 剪贴板 / 通知（桌面专属） | ❌ | `cfg(target_os = "android")` 排除，换 Android 插件 |
+
+**三个真正的难点**
+
+1. `ssh2` + OpenSSL 交叉编译（NDK）—— 建议直接换 `russh`，长期收益大
+2. 软键盘与 xterm：功能键条（Ctrl/Esc/Tab/方向键/Ctrl+C）、IME 组合输入、键盘弹起自动 resize（2~3 周）
+3. 后台保活：前台服务 + 常驻通知 + 断线重连适配移动网络（1 周）
+
+**MVP 功能范围（第一版砍到最小）**
+
+| 保留 | 砍掉 |
+|---|---|
+| SSH（密码 + 密钥）、单会话终端 + 功能键条 | 分屏、广播台 |
+| 连接列表 + 分组 | 串口、本地终端、端口转发 |
+| 复制粘贴、字号调节 | 流量审计、监控图表、SFTP（第二版） |
+
+**工期估算**：6~8 周（Tauri 工程 3~5 天 + cfg 分层 1 周 + SSH 库迁移 2~3 周 + 移动端适配 2~3 周 + Android 专项 1 周）
+
+**启动时的第一步建议**：先加 `cfg` 分层并用 `cargo check --target aarch64-linux-android` 探查编译错误（1~2 小时），得到确定的可行性结论后再动业务代码。

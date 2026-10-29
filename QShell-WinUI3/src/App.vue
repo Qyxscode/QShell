@@ -499,7 +499,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("0.99.88");
+const appVersion = ref("0.99.89");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -1353,12 +1353,43 @@ watch(activeDownLedCount, (count) => {
 }, { immediate: true });
 
 // 统一终端窗口尺寸调整适配 (支持 SSH 及 Telnet NAWS 协议动态协商)
+/**
+ * 软复位终端显示（Ctrl+Shift+R）。
+ * 发 RIS（\x1bc）让 xterm 丢弃内部状态（包括 pending wrap），再重新 fit 并同步尺寸。
+ * 用于排查/自救：如果复位后光标恢复正常，说明是前端渲染状态问题；
+ * 如果仍然错位，问题在远端 PTY/PS1。
+ */
+function resetTerminalDisplay(term: Terminal, tab: SessionTab) {
+  try {
+    term.write("\u001bc");
+  } catch (_) {}
+  window.setTimeout(() => {
+    try {
+      tab.fitInstance?.fit();
+    } catch (_) {}
+    sendTerminalResize(tab, term.cols, term.rows);
+  }, 60);
+}
+
+/** 最近一次 resize 的结果，供 Ctrl+Shift+I 诊断查看 */
+const lastResizeResult = ref<Record<string, string>>({});
+
 function sendTerminalResize(tab: SessionTab, cols: number, rows: number) {
   if (!tab.alive || cols <= 0 || rows <= 0) return;
+  // 尺寸不同步的直接后果就是换行位置对不上（光标漂移），
+  // 所以这里不能再静默吞掉错误，至少要留下可查的痕迹。
+  const onError = (error: unknown) => {
+    const message = String((error as any)?.message || error || "未知错误");
+    lastResizeResult.value = { ...lastResizeResult.value, [tab.id]: `${cols}x${rows} 失败: ${message}` };
+    console.warn("[terminal] resize 失败", { sessionId: tab.id, cols, rows, error });
+  };
+  const onOk = () => {
+    lastResizeResult.value = { ...lastResizeResult.value, [tab.id]: `${cols}x${rows} 成功` };
+  };
   if (isGenericProtocol(tab.host?.protocol)) {
-    invoke("resize_generic_session", { sessionId: tab.id, cols, rows }).catch(() => {});
+    invoke("resize_generic_session", { sessionId: tab.id, cols, rows }).then(onOk).catch(onError);
   } else {
-    invoke("resize_ssh_session", { sessionId: tab.id, cols, rows }).catch(() => {});
+    invoke("resize_ssh_session", { sessionId: tab.id, cols, rows }).then(onOk).catch(onError);
   }
 }
 watch(currentView, (val) => {
@@ -2169,11 +2200,50 @@ function highlightPlainLine(line: string): string {
   return out;
 }
 
-function applyOutputHighlight(text: string): string {
+/**
+ * 判断数据块是否以「半个 ESC 序列」结尾。
+ * 数据是按块到达的，如果块边界正好切在 "\x1b[" 和 "K" 之间，
+ * 后一块不含 ESC 就会被当成纯文本处理，往里插颜色码会把 readline 的清行序列拆坏，
+ * 表现为长按 Ctrl+←/→ 之后光标漂移。
+ */
+function endsWithPartialEscape(text: string): boolean {
+  const idx = text.lastIndexOf("\u001b");
+  if (idx < 0) return false;
+  const tail = text.slice(idx);
+  if (tail === "\u001b") return true;
+  if (tail.charAt(1) === "[") return !/[@-~]$/.test(tail);
+  if (tail.charAt(1) === "]") return !/\u0007$/.test(tail);
+  return tail.length === 2;
+}
+
+/** 记录哪些会话的上一块数据停在半个控制序列上（跨块的序列不能碰） */
+const partialEscapeSessions = new Set<string>();
+
+function applyOutputHighlight(sessionId: string, text: string): string {
   if (!terminalSettings.value.output_highlight) return text;
   if (!text) return text;
+
+  // 上一块以半截序列结尾 → 这一块的开头是那条序列的延续，整块跳过。
+  // 否则会出现「块 A = "\r\x1b["、块 B = "K..."」，B 被当成纯文本插了颜色码，
+  // 把 readline 的清行序列拆坏，光标从此漂移（网络抖动时尤其容易触发）。
+  if (partialEscapeSessions.has(sessionId)) {
+    if (!endsWithPartialEscape(text)) {
+      partialEscapeSessions.delete(sessionId);
+    }
+    return text;
+  }
+
   // 大块输出（cat 大文件等）不处理，避免正则拖慢渲染
   if (text.length > 8192) return text;
+
+  if (endsWithPartialEscape(text)) {
+    partialEscapeSessions.add(sessionId);
+    return text;
+  }
+
+  // 含控制序列又不以换行结尾：多半是 readline 的重绘片段（\r + 清行 + 重写），
+  // 这种片段参与替换会改变控制流，直接跳过
+  if (text.indexOf("\u001b") >= 0 && !text.endsWith("\n")) return text;
   // 按行处理而不是整块判断：SSH 的数据块里常混着一行带颜色的提示符，
   // 整块跳过会导致紧挨着的纯文本行（echo ERROR 之类）也一起被忽略。
   return text.split("\n").map(highlightPlainLine).join("\n");
@@ -5872,6 +5942,32 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
       openCommandPalette();
       return false;
     }
+    // 重置终端显示：Ctrl+Shift+R（软复位，用于光标错位后自救）
+    if (e.ctrlKey && e.shiftKey && !e.altKey && key === "r") {
+      e.preventDefault();
+      e.stopPropagation();
+      resetTerminalDisplay(term, newTab);
+      return false;
+    }
+    // 诊断：Ctrl+Shift+I 对比前端尺寸与远端 PTY 尺寸（判断 resize 是否真的生效）
+    if (e.ctrlKey && e.shiftKey && !e.altKey && key === "i") {
+      e.preventDefault();
+      e.stopPropagation();
+      term.writeln(
+        `\r\n\x1b[36m[QShell] 前端尺寸 ${term.cols} 列 × ${term.rows} 行` +
+          `　—　下一行是远端 stty size 的输出（格式 "行 列"）应完全一致\x1b[0m`
+      );
+      const resizeInfo = lastResizeResult.value[sid];
+      if (resizeInfo) {
+        term.writeln(`\x1b[36m[QShell] 最近一次 resize: ${resizeInfo}\x1b[0m`);
+      }
+      if (isGenericProtocol(newTab.host?.protocol)) {
+        invoke("write_generic_session", { sessionId: sid, data: "stty size\r" }).catch(() => {});
+      } else {
+        invoke("write_ssh_session", { sessionId: sid, data: "stty size\r" }).catch(() => {});
+      }
+      return false;
+    }
     // 终端搜索：Ctrl+F
     if (e.ctrlKey && !e.shiftKey && !e.altKey && key === "f") {
       e.preventDefault();
@@ -5914,7 +6010,11 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     term.onData((data) => {
       if (newTab.read_only) return;
       // 跟踪输入行：记录命令历史 + 识别用户主动 exit/logout（仅 SSH 需要）
-      for (const ch of data) {
+      // 但必须先剥掉控制序列：Ctrl+←/Ctrl+→ 发的是 \x1b[1;5D 这类 CSI，
+      // 直接按字符累加会把 "[1;5D" 当输入塞进 inputLine（历史被污染、长按还会无限增长）。
+      const ESC_SEQUENCE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]/g;
+      const plainInput = data.indexOf("\x1b") >= 0 ? data.replace(ESC_SEQUENCE, "") : data;
+      for (const ch of plainInput) {
         if (ch === "\r" || ch === "\n") {
           const line = newTab.inputLine || "";
           const cmd = line.trim().toLowerCase();
@@ -5949,14 +6049,14 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
 
     const unlisten = await listen<string>(`ssh-data-${sid}`, (event) => {
       // 输出高亮：关键字着色（开关在偏好设置里，默认开启）
-      term.write(applyOutputHighlight(event.payload));
+      term.write(applyOutputHighlight(sid, event.payload));
       // 只保留最近输出片段，用于判断当前是否处于密码输入提示（避免把密码写进历史）
       newTab.recentOutput = ((newTab.recentOutput || "") + event.payload).slice(-400);
     });
     newTab.unlisten = unlisten;
 
     // 监听断开事件：1:1 对标 ssh8.py handle_terminal_disconnected
-    listen(`ssh-closed-${sid}`, () => {
+    listen<string>(`ssh-closed-${sid}`, (event) => {
       newTab.alive = false;
       newTab.is_connecting = false;
       newTab.latency = 0;
@@ -5969,7 +6069,13 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
         isSftpDragOver.value = false;
       }
 
-      term.writeln("\r\n\x1b[33m[终端连接已断开。按回车键重新连接...]\x1b[0m\r\n");
+      // 后端会把断开原因带出来（远端结束 / 读取失败等），显示出来便于判断责任方
+      const reason = typeof event?.payload === "string" ? event.payload.trim() : "";
+      if (reason && reason !== "远端结束了会话") {
+        term.writeln(`\r\n\x1b[33m[终端连接已断开：${reason}]\x1b[0m`);
+      } else {
+        term.writeln("\r\n\x1b[33m[终端连接已断开。按回车键重新连接...]\x1b[0m\r\n");
+      }
       // 事件分流：用户主动退出记「手动断开」，意外掉线记「异常掉线」
       if (newTab.closingByUser) {
         // 关闭标签 / 断开按钮：事件由调用方处理，这里不重复记录
@@ -6225,6 +6331,14 @@ async function doStartSsh(tab: SessionTab) {
     term.onResize(({ cols, rows }) => {
       sendTerminalResize(tab, cols, rows);
     });
+
+    // 连接（含重连）成功后强制同步一次尺寸。
+    // onResize 只在 cols/rows 变化时才触发，重连时终端尺寸没变 → 新 PTY 会停在默认 80x24，
+    // 而前端按自己的列数渲染，长命令（尤其配合 readline 重绘）换行位置对不上，表现为光标漂移。
+    try {
+      tab.fitInstance?.fit();
+    } catch (_) {}
+    sendTerminalResize(tab, term.cols, term.rows);
 
     // 仅 SSH 模式启动服务器资源监控
     if (!isGenericProtocol(h.protocol)) {
