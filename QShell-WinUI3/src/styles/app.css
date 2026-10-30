@@ -6220,8 +6220,12 @@ body,
 }
 
 /* 更新弹窗 */
+/* 版本号默认用强调色，但具体颜色由组件按对比度决定（见 UpdateDialog.vue）：
+   暗色模式配灰色强调色时 --color-primary 会暗到看不清，那里会自动退回 --text-main */
 .update-version {
   color: var(--color-primary);
+  font-weight: 700;
+  letter-spacing: 0.2px;
 }
 
 .update-notes {
@@ -6383,7 +6387,12 @@ body,
 }
 
 .settings-group-arrow {
-  font-size: 11px;
+  /* 三角字符本身带基线偏移，用 flex 居中比调 line-height 更稳 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  line-height: 1;
   color: var(--text-sub);
 }
 
@@ -6424,8 +6433,9 @@ body,
 }
 
 .settings-group-toggle .settings-group-arrow {
-  font-size: 11px;
-  padding: 0;
+  /* 与标题文字同高：11px 时三角小得几乎看不见，而且会和文字基线错位 */
+  font-size: 14px;
+  padding: 0 2px 0 0;
   line-height: 1;
   color: var(--text-sub);
   transition: color 0.15s ease;
