@@ -4,6 +4,23 @@
 
 单文件便携运行，静态链接 MSVC 运行库，用户端无需安装 VC++ Redistributable。
 
+---
+
+> **🪟 需要支持 Windows XP / 7 / 8.1？**
+>
+> 主项目依赖 WebView2 与现代 Rust 工具链，**无法在 Windows 7 及更早系统运行**。
+> 老系统请使用独立实现的分支版本：**[QShell Lite →](../../releases?q=lite&expanded=true)**
+>
+> - 单目录部署（`QShellLite.exe` + 一个 DLL），解压即用
+> - 自写 VT 引擎，不依赖 PuTTY / WebView2
+> - 支持 Windows XP SP3 ~ Windows 11
+> - 与主项目**共用同一份配置文件**，主机/备忘录/设置互通
+> - ⚠️ 预览版，未做详细测试，请勿用于关键生产环境
+>
+> 该版本为长期可用的独立分支，不受主线版本更新影响。
+
+---
+
 ## 功能
 
 ### 连接协议
