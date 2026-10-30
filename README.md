@@ -9,7 +9,7 @@
 > **🪟 需要支持 Windows XP / 7 / 8.1？**
 >
 > 主项目依赖 WebView2 与现代 Rust 工具链，**无法在 Windows 7 及更早系统运行**。
-> 老系统请使用独立实现的分支版本：**[QShell Lite →](../../releases?q=lite&expanded=true)**
+> 老系统请使用独立实现的分支版本：**[QShell Lite →](https://github.com/Qyxscode/QShell/releases?q=lite&expanded=true)**
 >
 > - 单目录部署（`QShellLite.exe` + 一个 DLL），解压即用
 > - 自写 VT 引擎，不依赖 PuTTY / WebView2
