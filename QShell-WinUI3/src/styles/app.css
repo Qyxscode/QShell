@@ -9649,3 +9649,24 @@ body.pane-splitting .pane-splitter.row::after {
   gap: 16px;
   flex-wrap: wrap;
 }
+/* 流量单位切换按钮：只放一个换算图标，用颜色区分开关状态。
+   文字版「自动 / 原始」在卡片上看不出是在讲什么，图标 + 高亮更直白。 */
+.traffic-unit-btn {
+  padding: 0 6px;
+  min-width: 0;
+  letter-spacing: 0;
+  opacity: 0.55;
+}
+
+.traffic-unit-btn.is-active {
+  opacity: 1;
+  border-color: rgba(56, 189, 248, 0.55);
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.traffic-unit-btn .traffic-unit-icon {
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+  opacity: 1;
+}
