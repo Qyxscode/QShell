@@ -62,3 +62,7 @@ WIN7-LITE-HANDOFF.md
 # 导出的配置备份（含明文密码，绝对不要提交）
 qshell_config.json
 *.qshell-backup.json
+# QShell Lite：构建产物（build.ps1 从 lib/ 复制出来，不提交）
+QShell-Lite/Renci.SshNet.dll
+QShell-Lite/QShellLite.exe
+QShell-Lite/vt-spike/
