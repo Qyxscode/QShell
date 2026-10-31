@@ -6,7 +6,7 @@
 
 - 路径：`C:\Users\a6704\Desktop\SSH`（仓库根），应用在 `QShell-WinUI3/`
 - 技术栈：Tauri 2 + Rust + Vue 3 + xterm.js，Windows 10/11
-- 当前版本：**1.0.0**（已发布）
+- 当前版本：**1.0.1**（已发布）
 - 前端：`src/App.vue`（约 8500 行，单体）、`src/components/`（12 个组件）、`src/styles/app.css`（约 8900 行）
 - 后端：`src-tauri/src/`（ssh/sftp/ftp/monitor/traffic/port_forward/trace_route 等）
 

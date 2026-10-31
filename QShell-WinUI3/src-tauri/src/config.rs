@@ -185,6 +185,12 @@ pub struct AppSettings {
     #[serde(default)]
     pub session_restore_enabled: Option<bool>,
     pub webdav: Option<WebDavSettings>,
+    /// 告警忽略记录（到期 / 流量分别记录，条件变化时自动失效）。
+    /// 结构由前端维护：
+    /// { "expire": { "host:port": "到期日期指纹" },
+    ///   "traffic": { "host:port": { "pct": 92, "threshold": 90 } } }
+    #[serde(default)]
+    pub alert_ignores: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

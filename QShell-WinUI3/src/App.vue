@@ -108,6 +108,41 @@ function getTrafficProgress(h: HostItem): number {
   return Math.max(0, Math.min(100, pct));
 }
 
+// --- 流量单位自动换算 ---
+// 用户在编辑里可能按 MB 记录，但卡片上 5000MB 不如 4.88GB 直观。
+// 这是一个纯显示偏好，默认开启；切换后记住，存在 localStorage。
+const trafficUnitAuto = ref<boolean>((() => {
+  try {
+    const raw = localStorage.getItem("qshell_traffic_unit_auto");
+    return raw === null ? true : raw === "true";
+  } catch {
+    return true;
+  }
+})());
+
+function toggleTrafficUnitAuto() {
+  trafficUnitAuto.value = !trafficUnitAuto.value;
+  try {
+    localStorage.setItem("qshell_traffic_unit_auto", String(trafficUnitAuto.value));
+  } catch (_) {}
+}
+
+/** 按数值大小挑合适的单位：<1GB 用 MB，<1TB 用 GB，否则 TB；关闭换算时原样显示 */
+function formatTrafficValue(valueText?: string, unit?: string): string {
+  const raw = String(valueText ?? "0");
+  const upper = (unit || "GB").toUpperCase();
+  const value = parseFloat(raw);
+  if (!trafficUnitAuto.value || !Number.isFinite(value) || value <= 0) {
+    return `${raw}${upper}`;
+  }
+  const toMb = upper.includes("TB") ? 1024 * 1024 : upper.includes("GB") ? 1024 : 1;
+  const mb = value * toMb;
+  const round2 = (n: number) => String(Math.round(n * 100) / 100);
+  if (mb < 1024) return `${round2(mb)}MB`;
+  if (mb < 1024 * 1024) return `${round2(mb / 1024)}GB`;
+  return `${round2(mb / (1024 * 1024))}TB`;
+}
+
 // 从 localStorage 读取保存的主题模式，默认为 dark，并立即挂载 data-theme 属性到 document
 const savedTheme = (typeof localStorage !== "undefined" && (localStorage.getItem("qshell_theme_mode") as "dark" | "light")) || "dark";
 const themeMode = ref<"dark" | "light">(savedTheme);
@@ -499,7 +534,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.0");
+const appVersion = ref("1.0.1");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -1535,7 +1570,43 @@ interface HostAlertInfo {
   type: "expire" | "traffic";
   msg: string;
   hostItem?: HostItem;
+  /** 流量告警触发时的百分比，忽略时需要记下来 */
+  pct?: number;
+  /** 流量告警使用的阈值 */
+  threshold?: number;
 }
+
+// --- 告警忽略记录（持久化在 config.json 的 settings.alert_ignores）---
+// 到期与流量分开记：流量有独立的计费周期，和机器到期日无关。
+interface AlertIgnoreStore {
+  /** host:port -> 忽略时的到期日期指纹（日期一改，指纹不同 → 自动重新提醒） */
+  expire?: Record<string, string>;
+  /** host:port -> 忽略时的流量状态（流量回落到阈值以下后自动失效） */
+  traffic?: Record<string, { pct: number; threshold: number }>;
+}
+
+function hostAlertKey(h: HostItem): string {
+  return `${h.host}:${h.port}`;
+}
+
+function readAlertIgnores(): AlertIgnoreStore {
+  const raw = (configData.value.settings as any)?.alert_ignores;
+  if (raw && typeof raw === "object") {
+    return {
+      expire: raw.expire && typeof raw.expire === "object" ? { ...raw.expire } : {},
+      traffic: raw.traffic && typeof raw.traffic === "object" ? { ...raw.traffic } : {},
+    };
+  }
+  return { expire: {}, traffic: {} };
+}
+
+function writeAlertIgnores(store: AlertIgnoreStore) {
+  (configData.value.settings as any).alert_ignores = {
+    expire: store.expire || {},
+    traffic: store.traffic || {},
+  };
+}
+
 
 // --- 会话事件（掉线 / 重连提示）---
 interface SessionEvent {
@@ -1711,6 +1782,27 @@ function handleGlobalClick(e: MouseEvent) {
 }
 
 function clearAllAlerts() {
+  // 「忽略」要持久化：按告警类型分别记指纹，条件变化后自动恢复提醒
+  const ignores = readAlertIgnores();
+  for (const alert of hostAlertList.value) {
+    const host = alert.hostItem;
+    if (!host) continue;
+    const key = hostAlertKey(host);
+    if (alert.type === "expire") {
+      if (host.details?.expire_date) {
+        ignores.expire = ignores.expire || {};
+        ignores.expire[key] = host.details.expire_date;
+      }
+    } else if (alert.type === "traffic") {
+      ignores.traffic = ignores.traffic || {};
+      ignores.traffic[key] = {
+        pct: alert.pct ?? getTrafficProgress(host),
+        threshold: alert.threshold ?? 90,
+      };
+    }
+  }
+  writeAlertIgnores(ignores);
+  void persistAlertIgnores();
   hostAlertList.value = [];
   showAlertPopover.value = false;
 }
@@ -1760,40 +1852,85 @@ function handleAlertClick(al: HostAlertInfo) {
 function evaluateHostAlerts() {
   const alerts: HostAlertInfo[] = [];
   const now = new Date();
+  const ignores = readAlertIgnores();
+  let ignoresChanged = false;
+
   configData.value.managed_hosts.forEach(h => {
+    const key = hostAlertKey(h);
+
     // 1. 到期检测
     if (h.details?.expire_date && h.details.expire_date !== "无限") {
       const expDate = new Date(h.details.expire_date.replace(/-/g, "/"));
       if (!isNaN(expDate.getTime())) {
         const diffDays = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 3600 * 24));
-        if (diffDays <= 3) {
+        // 到期日本身就是忽略指纹：用户改了日期（续费）→ 指纹不同 → 忽略自动失效
+        const fingerprint = h.details.expire_date;
+        const ignored = ignores.expire?.[key];
+        if (ignored && ignored === fingerprint) {
+          // 已忽略且日期未变：静默（过期之后同样静默，视为用户已处理）
+        } else if (diffDays <= 3) {
+          if (ignored && ignored !== fingerprint) {
+            delete ignores.expire![key];
+            ignoresChanged = true;
+          }
           alerts.push({
             hostName: h.name,
             type: "expire",
-            msg: diffDays <= 0 ? `已于 ${h.details.expire_date} 到期！` : `将在 ${diffDays} 天后 (${h.details.expire_date}) 到期`,
+            msg: diffDays <= 0
+              ? `已过期 ${Math.abs(diffDays)} 天（${h.details.expire_date} 已到期）`
+              : `将在 ${diffDays} 天后 (${h.details.expire_date}) 到期`,
             hostItem: h,
           });
         }
       }
     }
-    // 2. 超额流量检测
+
+    // 2. 超额流量检测（与机器到期日无关，走独立的计费周期）
     if (h.details && !h.details.traffic_total_infinite && h.details.traffic_total && h.details.traffic_used) {
       // 用统一换算后的百分比，避免 used/total 单位不同时算出 500% 之类的假报警。
       const pct = getTrafficProgress(h);
       const threshold = typeof h.details.alert_traffic_pct === "number" && h.details.alert_traffic_pct > 0
         ? h.details.alert_traffic_pct
         : 90;
-      if (pct >= threshold) {
+      const ignoredTraffic = ignores.traffic?.[key];
+      // 流量回落到阈值以下（计费周期重置、调大总量、手动校准）→ 忽略自动失效
+      if (ignoredTraffic && pct < threshold) {
+        delete ignores.traffic![key];
+        ignoresChanged = true;
+      }
+      const stillIgnored =
+        !!ignoredTraffic &&
+        pct >= threshold &&
+        // 回落超过 5 个百分点也算"情况已变化"，避免忽略永久生效
+        pct >= ignoredTraffic.pct - 5;
+
+      if (pct >= threshold && !stillIgnored) {
         alerts.push({
           hostName: h.name,
           type: "traffic",
           msg: `流量使用率达 ${Math.round(pct)}%（阈值 ${threshold}%）`,
           hostItem: h,
+          pct,
+          threshold,
         });
       }
     }
   });
+
+  if (ignoresChanged) {
+    writeAlertIgnores(ignores);
+    void persistAlertIgnores();
+  }
   hostAlertList.value = alerts;
+}
+
+/** 忽略状态变化后落盘（失败只记日志，不影响界面） */
+async function persistAlertIgnores() {
+  try {
+    await invoke("save_hosts_config", { config: configData.value });
+  } catch (error) {
+    console.warn("[alerts] 保存忽略状态失败:", error);
+  }
 }
 
 // --- 全局右键菜单系统 ---
@@ -3103,32 +3240,45 @@ const importSelectModal = ref({
 // 终端类型：auto 时 SSH 会探测服务器上可用的 terminfo，Telnet 回退 xterm-256color。
 
 
-const availableSerialPorts = ref<string[]>([]);
+interface SerialPortInfo {
+  name: string;
+  label: string;
+  kind: "usb" | "pci" | "bluetooth" | "unknown";
+  manufacturer?: string | null;
+  product?: string | null;
+  vid?: number | null;
+  pid?: number | null;
+}
+const availableSerialPorts = ref<SerialPortInfo[]>([]);
 const isScanningPorts = ref(false);
 
 const serialPortOptions = computed(() => {
-  const scanned = [...availableSerialPorts.value];
+  // 已扫描到的真实设备：用后端给的设备描述（含 USB 厂商/产品与 VID:PID）
+  const options = availableSerialPorts.value.map(p => ({ label: p.label, value: p.name }));
+  const seen = new Set(options.map(o => o.value));
   // 补充常用默认 COM 口，确保即便未插设备也能随时点击下拉选择
-  const standard = ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"];
-  const set = new Set([...scanned, ...standard]);
-  // 如果当前用户填写的 host 不在列表中，也动态补上
-  if (hostModal.value.form.host && hostModal.value.form.host.trim()) {
-    set.add(hostModal.value.form.host.trim());
+  for (const name of ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]) {
+    if (!seen.has(name)) {
+      options.push({ label: name, value: name });
+      seen.add(name);
+    }
   }
-  return Array.from(set).map(p => ({
-    label: scanned.includes(p) ? `${p} (已连接设备)` : p,
-    value: p
-  }));
+  // 如果当前用户填写的 host 不在列表中，也动态补上
+  const current = hostModal.value.form.host?.trim();
+  if (current && !seen.has(current)) {
+    options.push({ label: `${current}（手动填写）`, value: current });
+  }
+  return options;
 });
 
 async function refreshSerialPorts() {
   isScanningPorts.value = true;
   if (isTauri) {
     try {
-      const ports = await invoke<string[]>("list_serial_ports");
+      const ports = await invoke<SerialPortInfo[]>("list_serial_ports");
       availableSerialPorts.value = ports || [];
       if (ports && ports.length > 0 && (!hostModal.value.form.host || hostModal.value.form.host === "COM1")) {
-        hostModal.value.form.host = ports[0];
+        hostModal.value.form.host = ports[0].name;
       }
     } catch (e) {
       console.warn("获取本机串口列表失败:", e);
@@ -3208,7 +3358,7 @@ function onProtocolChange(newProto: "ssh" | "telnet" | "rlogin" | "raw" | "ftp" 
     hostModal.value.form.port = 9600;
     refreshSerialPorts();
     if (!hostModal.value.form.host || !hostModal.value.form.host.toUpperCase().startsWith("COM")) {
-      hostModal.value.form.host = availableSerialPorts.value[0] || "COM1";
+      hostModal.value.form.host = availableSerialPorts.value[0]?.name || "COM1";
     }
   }
 }
@@ -8418,6 +8568,120 @@ async function persistWebdavSettings() {
   await invoke("save_hosts_config", { config: configData.value });
 }
 
+// ===== 备份里的「界面偏好」快照 =====
+// 这些存在 localStorage，不在 config.json 里，光备份配置文件会丢。
+// 导出时随备份包一起带走，导入时再写回并即时生效。
+const BACKUP_UI_KEYS = [
+  "qshell_animations_enabled",
+  "qshell_pane_layout",
+  "qshell_pane_split",
+  "qshell_mgmt_cols",
+  "qshell_last_local_dir",
+  "qshell_command_history_v1",
+] as const;
+
+function collectBackupUiState(): string {
+  const payload: Record<string, string> = {};
+  for (const key of BACKUP_UI_KEYS) {
+    try {
+      const value = localStorage.getItem(key);
+      if (value !== null) payload[key] = value;
+    } catch (_) {}
+  }
+  return JSON.stringify(payload);
+}
+
+/** 把备份里的界面偏好写回 localStorage 并热应用到当前界面 */
+function applyBackupUiState(raw?: string | null): string[] {
+  if (!raw) return [];
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  const read = (key: string): string | null =>
+    typeof parsed[key] === "string" ? String(parsed[key]) : null;
+  const restored: string[] = [];
+
+  // 1. 动画开关
+  const animations = read("qshell_animations_enabled");
+  if (animations !== null) {
+    setAnimationsEnabled(animations === "true");
+    restored.push("动画开关");
+  }
+
+  // 2. 分屏布局
+  const layoutRaw = read("qshell_pane_layout");
+  if (layoutRaw !== null) {
+    const layout = Number(layoutRaw);
+    if (layout >= 1 && layout <= 4) {
+      const next = layout as 1 | 2 | 3 | 4;
+      paneLayoutSetting.value = next;
+      try {
+        localStorage.setItem("qshell_pane_layout", String(next));
+      } catch (_) {}
+      if (next !== paneLayout.value) reshufflePanes(next);
+      restored.push("分屏布局");
+    }
+  }
+
+  // 3. 分屏比例
+  const splitRaw = read("qshell_pane_split");
+  if (splitRaw) {
+    try {
+      const parsedSplit = JSON.parse(splitRaw);
+      paneSplit.value = {
+        col: clampPaneSplit(Number(parsedSplit.col)),
+        row: clampPaneSplit(Number(parsedSplit.row)),
+      };
+      try {
+        localStorage.setItem("qshell_pane_split", splitRaw);
+      } catch (_) {}
+      restored.push("分屏比例");
+    } catch (_) {}
+  }
+
+  // 4. 主机管理面板列数
+  const colsRaw = read("qshell_mgmt_cols");
+  if (colsRaw !== null) {
+    const cols = Number(colsRaw);
+    if (cols >= 1 && cols <= 3) {
+      mgmtGridColumns.value = cols;
+      try {
+        localStorage.setItem("qshell_mgmt_cols", String(cols));
+      } catch (_) {}
+      restored.push("主机管理列数");
+    }
+  }
+
+  // 5. 上次打开的本地目录（只恢复记忆，不立刻跳转）
+  const lastDir = read("qshell_last_local_dir");
+  if (lastDir) {
+    try {
+      localStorage.setItem("qshell_last_local_dir", lastDir);
+    } catch (_) {}
+    restored.push("本地目录记忆");
+  }
+
+  // 6. 命令历史
+  const historyRaw = read("qshell_command_history_v1");
+  if (historyRaw) {
+    try {
+      const entries = JSON.parse(historyRaw);
+      if (Array.isArray(entries)) {
+        commandHistory.value = entries.slice(0, HISTORY_LIMIT);
+        try {
+          localStorage.setItem(HISTORY_STORAGE_KEY, historyRaw);
+        } catch (_) {}
+        restored.push("命令历史");
+      }
+    } catch (_) {}
+  }
+
+  return restored;
+}
+
 async function handleExportLocal() {
   const savePath = await openLocalFileBrowser({
     action: "save",
@@ -8427,7 +8691,10 @@ async function handleExportLocal() {
   if (!savePath) return;
   try {
     await persistWebdavSettings();
-    const res = await invoke<{ success: boolean; message: string }>("export_local_backup", { targetPath: savePath });
+    const res = await invoke<{ success: boolean; message: string }>("export_local_backup", {
+      targetPath: savePath,
+      uiState: collectBackupUiState(),
+    });
     backupModal.value.status_msg = res.message;
   } catch (e: any) {
     backupModal.value.status_msg = `导出失败: ${e}`;
@@ -8443,8 +8710,13 @@ async function handleImportLocal() {
   const pathStr = openPath;
   try {
     await persistWebdavSettings();
-    const res = await invoke<{ success: boolean; message: string }>("import_local_backup", { sourcePath: pathStr });
-    backupModal.value.status_msg = res.message;
+    const res = await invoke<{ success: boolean; message: string; ui_state?: string | null }>(
+      "import_local_backup",
+      { sourcePath: pathStr }
+    );
+    const restored = applyBackupUiState(res.ui_state);
+    backupModal.value.status_msg =
+      restored.length > 0 ? `${res.message}（已恢复${restored.join("、")}）` : res.message;
     await loadConfig();
   } catch (e: any) {
     backupModal.value.status_msg = `导入失败: ${e}`;
@@ -8483,7 +8755,8 @@ async function handleWebdavUpload() {
         user: backupModal.value.webdav_user,
         pwd: backupModal.value.webdav_pwd || null,
         path: backupModal.value.webdav_path,
-      }
+      },
+      uiState: collectBackupUiState(),
     });
     backupModal.value.status_msg = res.message;
   } catch (e: any) {
@@ -8498,15 +8771,20 @@ async function handleWebdavDownload() {
   backupModal.value.status_msg = "正在从云端拉取备份恢复...";
   try {
     await persistWebdavSettings();
-    const res = await invoke<{ success: boolean; message: string }>("webdav_download_backup", {
-      cfg: {
-        url: backupModal.value.webdav_url,
-        user: backupModal.value.webdav_user,
-        pwd: backupModal.value.webdav_pwd || null,
-        path: backupModal.value.webdav_path,
+    const res = await invoke<{ success: boolean; message: string; ui_state?: string | null }>(
+      "webdav_download_backup",
+      {
+        cfg: {
+          url: backupModal.value.webdav_url,
+          user: backupModal.value.webdav_user,
+          pwd: backupModal.value.webdav_pwd || null,
+          path: backupModal.value.webdav_path,
+        },
       }
-    });
-    backupModal.value.status_msg = res.message;
+    );
+    const restored = applyBackupUiState(res.ui_state);
+    backupModal.value.status_msg =
+      restored.length > 0 ? `${res.message}（已恢复${restored.join("、")}）` : res.message;
     await loadConfig();
   } catch (e: any) {
     backupModal.value.status_msg = `恢复失败: ${e}`;
@@ -9893,8 +10171,16 @@ onUnmounted(() => {
               <!-- 流量展示行与右上角独立的"统计详情"交互标签 -->
               <div class="traffic-section">
                 <div class="traffic-label">
-                  <span class="traffic-text-main">流量: {{ h.details?.traffic_used || '0' }}{{ h.details?.traffic_used_unit || 'GB' }} / {{ h.details?.traffic_total_infinite ? '无限 (∞)' : `${h.details?.traffic_total || '0'}${h.details?.traffic_total_unit || 'GB'}` }}</span>
+                  <span class="traffic-text-main">流量: {{ formatTrafficValue(h.details?.traffic_used, h.details?.traffic_used_unit) }} / {{ h.details?.traffic_total_infinite ? '无限 (∞)' : formatTrafficValue(h.details?.traffic_total, h.details?.traffic_total_unit) }}</span>
                   <div class="traffic-label-actions">
+                    <button
+                      type="button"
+                      :class="['traffic-audit-btn', 'traffic-unit-btn', trafficUnitAuto ? 'is-active' : '']"
+                      @click.stop="toggleTrafficUnitAuto"
+                      :title="trafficUnitAuto ? '当前自动换算单位，点击改为显示原始单位' : '当前显示原始单位，点击改为自动换算'"
+                    >
+                      <span class="audit-icon traffic-unit-icon">⇄</span>
+                    </button>
                     <button 
                       type="button" 
                       class="traffic-audit-btn" 

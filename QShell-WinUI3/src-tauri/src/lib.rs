@@ -97,13 +97,77 @@ fn write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())
 }
+/// 串口设备信息。USB 转串口（CH340 / CP210x / FTDI / CDC ACM）在 Windows 上都会
+/// 映射成 COM 口，这里把 USB 描述符里的厂商/产品名一起带出来，方便用户区分多个同类设备。
+#[derive(serde::Serialize)]
+struct SerialPortInfo {
+    name: String,
+    label: String,
+    kind: String,
+    manufacturer: Option<String>,
+    product: Option<String>,
+    vid: Option<u16>,
+    pid: Option<u16>,
+}
 
 #[tauri::command]
-fn list_serial_ports() -> Vec<String> {
+fn list_serial_ports() -> Vec<SerialPortInfo> {
     serialport::available_ports()
         .map(|ports| {
-            let mut list: Vec<String> = ports.into_iter().map(|p| p.port_name).collect();
-            list.sort();
+            let mut list: Vec<SerialPortInfo> = ports
+                .into_iter()
+                .map(|p| match &p.port_type {
+                    serialport::SerialPortType::UsbPort(info) => {
+                        let manufacturer = info.manufacturer.clone();
+                        let product = info.product.clone();
+                        // 优先显示产品名，其次厂商，都没有就退回通用说法
+                        let device_name = product
+                            .clone()
+                            .or_else(|| manufacturer.clone())
+                            .unwrap_or_else(|| "USB 串口设备".to_string());
+                        SerialPortInfo {
+                            label: format!(
+                                "{} — {} ({:04X}:{:04X})",
+                                p.port_name, device_name, info.vid, info.pid
+                            ),
+                            name: p.port_name,
+                            kind: "usb".to_string(),
+                            manufacturer,
+                            product,
+                            vid: Some(info.vid),
+                            pid: Some(info.pid),
+                        }
+                    }
+                    serialport::SerialPortType::PciPort => SerialPortInfo {
+                        label: format!("{} — 主板串口 (PCI)", p.port_name),
+                        name: p.port_name,
+                        kind: "pci".to_string(),
+                        manufacturer: None,
+                        product: None,
+                        vid: None,
+                        pid: None,
+                    },
+                    serialport::SerialPortType::BluetoothPort => SerialPortInfo {
+                        label: format!("{} — 蓝牙串口", p.port_name),
+                        name: p.port_name,
+                        kind: "bluetooth".to_string(),
+                        manufacturer: None,
+                        product: None,
+                        vid: None,
+                        pid: None,
+                    },
+                    serialport::SerialPortType::Unknown => SerialPortInfo {
+                        label: p.port_name.clone(),
+                        name: p.port_name,
+                        kind: "unknown".to_string(),
+                        manufacturer: None,
+                        product: None,
+                        vid: None,
+                        pid: None,
+                    },
+                })
+                .collect();
+            list.sort_by(|a, b| a.name.cmp(&b.name));
             list
         })
         .unwrap_or_default()
