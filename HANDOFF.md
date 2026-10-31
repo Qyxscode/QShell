@@ -179,7 +179,7 @@ BUGS.md 中原标记「待修复」的 BUG-061 / 062 / 063 / 065 已由用户确
 1. 删除文件、加入 `.gitignore`、提交移除
 2. 用 `git filter-repo --path qshell_config.json --invert-paths` 重写全部历史，`force push` 覆盖远程
 3. 备份 `.git` 到 `D:\SSH-git-backup-*.zip`
-4. 用户更换受影响主机的密码
+4. 用户更换受影响主机的密码（2026-11-01：3 台公网机器已更换；其余 5 台为内网机器、无公网入口，暂不更换——若日后开启端口转发/DDNS/VPN 暴露，需补换）
 
 **此后必须遵守**：
 1. **不用 `git add -A`**，改为显式列路径（`git add QShell-WinUI3/src README.md`）
