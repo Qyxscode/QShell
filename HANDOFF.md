@@ -164,3 +164,31 @@ BUGS.md 中原标记「待修复」的 BUG-061 / 062 / 063 / 065 已由用户确
   2. **终端没跟上**：面板高度动画 0.8s 期间终端区变高，但 xterm 只在动画结束 fit 一次 → 底部露底色。已改为 `fitPanesDuringPanelAnimation()`：动画期间 requestAnimationFrame 逐帧 fit，结束时统一发一次 resize。
   3. **class 时序**：线画在 `.is-open` 的 box-shadow 上，收起时类先移除、动画才开始 → 线提前消失。已把上下两条线改成 **元素自身的 background-image**（`linear-gradient` + `background-size: 100% 1px`，位置 0 0 / 0 100%），不挂任何 class，高度为 0 时自动不可见。
 - **铁律**：抽屉类元素的边界线不要挂在"展开态 class"上，用元素自身背景或常驻伪元素画；同时不要给整个面板加 opacity 过渡。
+---
+
+## 事故记录：误提交含明文凭据的配置文件（2026-11-01）
+
+**发生了什么**：提交 v1.0.1 时用了 `git add -A`，把仓库根目录里一个从备份 zip 解压出来的 `qshell_config.json`（含 8 台主机明文密码）一起提交并推送到了公开仓库。
+
+**为什么没拦住**：
+1. 用了 `git add -A` 全量暂存，没有逐个审阅
+2. `git status` / commit 输出里**已经打印出** `create mode 100644 qshell_config.json`，但被跳过没看
+3. 默认假设「提交是机械动作，不需要审查」
+
+**处理**：
+1. 删除文件、加入 `.gitignore`、提交移除
+2. 用 `git filter-repo --path qshell_config.json --invert-paths` 重写全部历史，`force push` 覆盖远程
+3. 备份 `.git` 到 `D:\SSH-git-backup-*.zip`
+4. 用户更换受影响主机的密码
+
+**此后必须遵守**：
+1. **不用 `git add -A`**，改为显式列路径（`git add QShell-WinUI3/src README.md`）
+2. **提交后必看 `git show --stat`**，确认文件清单里没有意外项
+3. **读 commit 输出**：`create mode` 列表就是最后一道人工防线
+4. 已装 `.git/hooks/pre-commit` 自动拦截（文件名 + 内容双检），但 hook 只是兜底，不能替代审阅
+5. 导出备份时不要落在项目目录里（那个文件就是这么进来的，`LastWriteTime` 是 1980/1/1）
+
+**pre-commit hook 检查项**：
+- 文件名：`config.json` / `qshell_config.json` / `*.pem` / `*.key` / `*.ppk` / `*.p12` / `*.pfx` / `id_rsa*` / `id_ed25519*` / `known_hosts` / `*.bak` / `.env*`
+- 内容：`"pwd|password|passphrase|secret|api_key|token": "非空值"`
+- 体积：>2MB 给出提醒
