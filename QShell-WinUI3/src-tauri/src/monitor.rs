@@ -545,7 +545,11 @@ pub async fn fetch_system_metrics(
 }
 
 fn format_speed(bps: f64) -> String {
-    if bps < 1024.0 * 1024.0 {
+    // 单位自动升级：加上 GB 档后，千兆以上（>1000 MB/s）显示成 "1.22 GB/s"，
+    // 字符数反而比 "1250.00 MB/s" 短，窄卡片里不会被省略号截断。
+    if bps >= 1024.0 * 1024.0 * 1024.0 {
+        format!("{:.2} GB/s", bps / (1024.0 * 1024.0 * 1024.0))
+    } else if bps < 1024.0 * 1024.0 {
         format!("{:.1} KB/s", bps / 1024.0)
     } else {
         format!("{:.2} MB/s", bps / (1024.0 * 1024.0))

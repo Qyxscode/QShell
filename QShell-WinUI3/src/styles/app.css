@@ -1056,21 +1056,24 @@ html.window-resizing .workspace-layout {
   min-height: 0;
   display: flex;
   flex-direction: row;
-  gap: 6px;
+  /* 不再用 gap：中线就是右侧卡片的左边框，间距全部由两侧 padding 控制，
+     这样中线左右才能严格对称（之前左 8px / 右 6px，看着偏） */
+  gap: 0;
 }
 
 .net-live-view .net-sub-card {
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 0 2px;
+  /* 外侧贴边 2px，靠中线一侧留 8px */
+  padding: 0 8px 0 2px;
   gap: 2px;
 }
 
 .net-live-view .net-sub-card + .net-sub-card {
   border-left: 1px solid var(--border-capsule);
   border-top: 0;
-  padding-left: 6px;
+  padding: 0 2px 0 8px;
   padding-top: 0;
 }
 
@@ -1079,6 +1082,9 @@ html.window-resizing .workspace-layout {
   min-height: 0;
   display: flex;
   align-items: center;
+  /* 基础规则靠负 margin 把网格「拽」宽，会破坏左右对称，这里收回 */
+  width: 100%;
+  margin: 0;
 }
 
 .net-live-view .led-matrix-svg {
@@ -1330,8 +1336,13 @@ html.window-resizing .workspace-layout {
 
 .net-header {
   display: flex;
-  align-items: baseline;
-  gap: 5px;
+  /* 固定高度 + 不换行：速度值变长时如果让「接收」换行，header 会变高，
+     把下面那格 LED 网格顶下去，两列看起来就错位了 */
+  align-items: center;
+  height: 16px;
+  overflow: hidden;
+  white-space: nowrap;
+  gap: 4px;
   min-width: 0;
 }
 
@@ -1348,6 +1359,8 @@ html.window-resizing .workspace-layout {
 [data-theme="light"] .net-direction.down { color: #15803D; }
 
 .net-label {
+  flex: none;
+  white-space: nowrap;
   font-size: 10px;
   font-weight: 500;
   color: var(--text-sub);
@@ -1355,7 +1368,12 @@ html.window-resizing .workspace-layout {
 
 .net-speed {
   margin-left: auto;
-  font-size: 13px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* 13 → 12：长数值（如 101.89 MB/s）在窄卡片里不再挤掉标签 */
+  font-size: 12px;
   font-weight: 500;
   line-height: 1;
   color: var(--text-main);
@@ -4645,9 +4663,12 @@ input[type="checkbox"]:checked {
 .chmod-table th { background: #222631; color: #C4C6D0; }
 
 .modal-footer {
-  /* 48 → 54：原来按钮上下各只剩 ~10px，被上下描边视觉挤压 */
-  height: 54px;
-  padding: 0 16px;
+  /* 不再用固定 height + align-items 居中（按钮虽然居中，但和弹窗底边圆角
+     叠在一起视觉上仍然显挤）。改成显式上下内边距，并放宽最小高度。 */
+  padding: 12px 16px;
+  height: auto;
+  min-height: 60px;
+  box-sizing: border-box;
   background: var(--bg-card);
   border-top: 1px solid var(--border-card);
   display: flex;
@@ -7767,7 +7788,7 @@ body,
 
 /* 设置弹窗底部按钮留白（BUG-044） */
 .settings-modal-card .modal-footer {
-  padding: 0 22px;
+  padding: 12px 22px; /* 左右更宽，上下留白与基础规则一致 */
 }
 /* ===================== 主题预设（暗/亮两版） ===================== */
 
@@ -8016,9 +8037,9 @@ body,
 
 /* 设置弹窗底部按钮：上下左右都留白 */
 .settings-modal-card .modal-footer {
-  padding: 10px 22px;
+  padding: 12px 22px;
   height: auto;
-  min-height: 54px;
+  min-height: 60px;
 }
 /* 主题块标签：左上角对齐（覆盖表单标签的右对齐/固定宽度） */
 .theme-preset-block .settings-form-label {
@@ -9669,4 +9690,14 @@ body.pane-splitting .pane-splitter.row::after {
   line-height: 1;
   font-weight: 700;
   opacity: 1;
+}
+/* 无限流量模式下，重置时间行换成说明文字（不再强制填写，也不覆盖历史设置） */
+.reset-time-na {
+  align-items: center;
+  opacity: 0.75;
+}
+
+.reset-time-na .time-hint {
+  font-size: 11px;
+  color: var(--text-sub);
 }
