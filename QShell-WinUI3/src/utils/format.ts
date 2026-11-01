@@ -38,9 +38,11 @@ export function formatSessionEventTime(ts: number): string {
 }
 
 /**
- * 传输速度格式化（B/s / KB/s / MB/s）。
+ * 传输速度格式化（B/s / KB/s / MB/s / GB/s）。
+ * 加到 GB 档是为了千兆以上的速度不至于变成 "1250.00 MB/s" 这种长串。
  */
 export function formatSpeed(bps: number): string {
+  if (bps >= 1024 * 1024 * 1024) return `${(bps / (1024 * 1024 * 1024)).toFixed(2)} GB/s`;
   if (bps < 1024) return `${bps} B/s`;
   if (bps < 1024 * 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
   return `${(bps / (1024 * 1024)).toFixed(2)} MB/s`;

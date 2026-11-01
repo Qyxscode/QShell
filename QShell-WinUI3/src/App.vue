@@ -534,7 +534,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.1");
+const appVersion = ref("1.0.2");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -1275,8 +1275,8 @@ function selectNetInterface(name: string) {
 }
 
 const LED_COLUMNS = 18;
-const LED_ROWS = 10;
-const TOTAL_LEDS = LED_COLUMNS * LED_ROWS; // 18 列 x 10 行，灯珠为正方形
+const LED_ROWS = 12;
+const TOTAL_LEDS = LED_COLUMNS * LED_ROWS; // 18 列 x 12 行，灯珠为正方形
 
 // 亮起区域按"离头部越远越暗"做整体渐变，而不是只有头部 4 颗才有颜色差异。
 function ledFadeOpacity(index: number, activeCount: number): number | undefined {
@@ -1306,14 +1306,14 @@ function calculateLedActiveCount(speedStr: string): number {
     kbps = val / 1024.0;
   }
 
-  // 科学真实网络刻度（共 180 颗灯珠，每排 18 颗）：
+  // 科学真实网络刻度（共 216 颗灯珠，每排 18 颗）：
   // - 10 KB/s 以下（心跳/闲置）：1 ~ 2 颗
   // - 100 KB/s：约 6 颗
   // - 1 MB/s (1024 KB/s)：18 颗（刚好第 1 排）
   // - 5 MB/s：约 53 颗
   // - 15 MB/s（百兆宽带满载）：约 76 颗
   // - 50 MB/s：约 124 颗
-  // - 100 MB/s（千兆跑满）：180 颗（10 排全满）
+  // - 100 MB/s（千兆跑满）：216 颗（12 排全满）
   let count = 0;
   if (kbps < 1.0) {
     count = 1;
@@ -3529,10 +3529,15 @@ async function saveHostForm() {
         traffic_total_infinite: f.traffic_total_infinite,
         traffic_used: f.traffic_used,
         traffic_used_unit: f.traffic_used_unit,
-        reset_day: Number(f.reset_day) || 1,
-        reset_hour: Number(f.reset_hour) || 0,
-        reset_min: Number(f.reset_min) || 0,
-        reset_sec: Number(f.reset_sec) || 0,
+        ...(
+          f.traffic_total_infinite
+            ? {} // 无限流量不写结算时刻，保留原值，避免触发后端误判重置
+            : {
+                reset_day: Number(f.reset_day) || 1,
+                reset_hour: Number(f.reset_hour) || 0,
+                reset_min: Number(f.reset_min) || 0,
+                reset_sec: Number(f.reset_sec) || 0,
+              }),
         traffic_direction: f.traffic_direction,
         target_interface: f.target_interface || "",
         traffic_price: f.traffic_price,
@@ -3605,10 +3610,15 @@ async function saveHostForm() {
         traffic_total_infinite: f.traffic_total_infinite,
         traffic_used: f.traffic_used,
         traffic_used_unit: f.traffic_used_unit,
-        reset_day: Number(f.reset_day) || 1,
-        reset_hour: Number(f.reset_hour) || 0,
-        reset_min: Number(f.reset_min) || 0,
-        reset_sec: Number(f.reset_sec) || 0,
+        ...(
+          f.traffic_total_infinite
+            ? {} // 无限流量不写结算时刻，保留原值，避免触发后端误判重置
+            : {
+                reset_day: Number(f.reset_day) || 1,
+                reset_hour: Number(f.reset_hour) || 0,
+                reset_min: Number(f.reset_min) || 0,
+                reset_sec: Number(f.reset_sec) || 0,
+              }),
         traffic_direction: f.traffic_direction,
         target_interface: f.target_interface || "",
         traffic_price: f.traffic_price,
@@ -3755,10 +3765,15 @@ async function saveHostForm() {
         traffic_total_infinite: f.traffic_total_infinite,
         traffic_used: f.traffic_used,
         traffic_used_unit: f.traffic_used_unit,
-        reset_day: Number(f.reset_day) || 1,
-        reset_hour: Number(f.reset_hour) || 0,
-        reset_min: Number(f.reset_min) || 0,
-        reset_sec: Number(f.reset_sec) || 0,
+        ...(
+          f.traffic_total_infinite
+            ? {} // 无限流量不写结算时刻，保留原值，避免触发后端误判重置
+            : {
+                reset_day: Number(f.reset_day) || 1,
+                reset_hour: Number(f.reset_hour) || 0,
+                reset_min: Number(f.reset_min) || 0,
+                reset_sec: Number(f.reset_sec) || 0,
+              }),
         traffic_direction: f.traffic_direction,
         target_interface: f.target_interface || "",
         traffic_price: f.traffic_price,
@@ -9309,8 +9324,8 @@ onUnmounted(() => {
                   <span class="net-speed">{{ monitorStats.net_up }}</span>
                 </div>
                 <div class="led-svg-wrap">
-                  <svg viewBox="0 0 108 60" class="led-matrix-svg" preserveAspectRatio="xMidYMid meet">
-                    <template v-for="row in 10" :key="'up-row-' + row">
+                  <svg viewBox="0 0 108 72" class="led-matrix-svg" preserveAspectRatio="xMidYMid meet">
+                    <template v-for="row in 12" :key="'up-row-' + row">
                       <rect
                         v-for="col in 18"
                         :key="'up-rect-' + ((row - 1) * 18 + col)"
@@ -9319,14 +9334,14 @@ onUnmounted(() => {
                         width="6"
                         height="6"
                         rx="1.3"
-                        :opacity="ledFadeOpacity((10 - row) * 18 + col, activeUpLedCount)"
+                        :opacity="ledFadeOpacity((12 - row) * 18 + col, activeUpLedCount)"
                         :class="[
                           'svg-led',
-                          ((10 - row) * 18 + col) <= activeUpLedCount ? 'active-up' : '',
-                          getRunnerLevel((10 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 0 ? 'runner-head-up' : '',
-                          getRunnerLevel((10 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 1 ? 'runner-tail-1-up' : '',
-                          getRunnerLevel((10 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 2 ? 'runner-tail-2-up' : '',
-                          getRunnerLevel((10 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 3 ? 'runner-tail-3-up' : ''
+                          ((12 - row) * 18 + col) <= activeUpLedCount ? 'active-up' : '',
+                          getRunnerLevel((12 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 0 ? 'runner-head-up' : '',
+                          getRunnerLevel((12 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 1 ? 'runner-tail-1-up' : '',
+                          getRunnerLevel((12 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 2 ? 'runner-tail-2-up' : '',
+                          getRunnerLevel((12 - row) * 18 + col, upRunnerIdx, activeUpLedCount) === 3 ? 'runner-tail-3-up' : ''
                         ]"
                       />
                     </template>
@@ -9341,8 +9356,8 @@ onUnmounted(() => {
                   <span class="net-speed">{{ monitorStats.net_down }}</span>
                 </div>
                 <div class="led-svg-wrap">
-                  <svg viewBox="0 0 108 60" class="led-matrix-svg" preserveAspectRatio="xMidYMid meet">
-                    <template v-for="row in 10" :key="'down-row-' + row">
+                  <svg viewBox="0 0 108 72" class="led-matrix-svg" preserveAspectRatio="xMidYMid meet">
+                    <template v-for="row in 12" :key="'down-row-' + row">
                       <rect
                         v-for="col in 18"
                         :key="'down-rect-' + ((row - 1) * 18 + col)"
@@ -9351,14 +9366,14 @@ onUnmounted(() => {
                         width="6"
                         height="6"
                         rx="1.3"
-                        :opacity="ledFadeOpacity((10 - row) * 18 + col, activeDownLedCount)"
+                        :opacity="ledFadeOpacity((12 - row) * 18 + col, activeDownLedCount)"
                         :class="[
                           'svg-led',
-                          ((10 - row) * 18 + col) <= activeDownLedCount ? 'active-down' : '',
-                          getRunnerLevel((10 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 0 ? 'runner-head-down' : '',
-                          getRunnerLevel((10 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 1 ? 'runner-tail-1-down' : '',
-                          getRunnerLevel((10 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 2 ? 'runner-tail-2-down' : '',
-                          getRunnerLevel((10 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 3 ? 'runner-tail-3-down' : ''
+                          ((12 - row) * 18 + col) <= activeDownLedCount ? 'active-down' : '',
+                          getRunnerLevel((12 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 0 ? 'runner-head-down' : '',
+                          getRunnerLevel((12 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 1 ? 'runner-tail-1-down' : '',
+                          getRunnerLevel((12 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 2 ? 'runner-tail-2-down' : '',
+                          getRunnerLevel((12 - row) * 18 + col, downRunnerIdx, activeDownLedCount) === 3 ? 'runner-tail-3-down' : ''
                         ]"
                       />
                     </template>
@@ -10164,7 +10179,7 @@ onUnmounted(() => {
               <div class="card-meta">
                 <span>备注: {{ h.details?.memo || '无' }}</span>
                 <span>到期: {{ h.details?.expire_date || '无限' }}</span>
-                <span>结算日: 每月 {{ h.details?.reset_day || 1 }} 日 {{ String(h.details?.reset_hour || 0).padStart(2, '0') }}:{{ String(h.details?.reset_min || 0).padStart(2, '0') }}:{{ String(h.details?.reset_sec || 0).padStart(2, '0') }}</span>
+                <span v-if="!h.details?.traffic_total_infinite">结算日: 每月 {{ h.details?.reset_day || 1 }} 日 {{ String(h.details?.reset_hour || 0).padStart(2, '0') }}:{{ String(h.details?.reset_min || 0).padStart(2, '0') }}:{{ String(h.details?.reset_sec || 0).padStart(2, '0') }}</span>
                 <span>价格: {{ h.details?.price || '0.00' }} {{ h.details?.currency || 'CNY' }}</span>
               </div>
 
@@ -11154,8 +11169,8 @@ onUnmounted(() => {
               </div>
             </div>
 
-            <!-- 行 3：流量重置时间 (每月几号 + 精确到秒) -->
-            <div class="form-row">
+            <!-- 行 3：流量重置时间 (每月几号 + 精确到秒)。无限流量不需要结算周期，直接隐藏这一行 -->
+            <div v-if="!hostModal.form.traffic_total_infinite" class="form-row">
               <label>流量重置时间 (每月结算重置时刻，精确到秒)</label>
               <div class="reset-time-row">
                 <span class="time-prefix">每月</span>
@@ -11190,6 +11205,12 @@ onUnmounted(() => {
                   customClass="reset-digit-stepper"
                 />
                 <span class="time-hint">(时 : 分 : 秒)</span>
+              </div>
+            </div>
+            <div v-else class="form-row">
+              <label>流量重置时间</label>
+              <div class="reset-time-row reset-time-na">
+                <span class="time-hint">无限流量模式无需设置结算重置时刻（保留原有历史记录）</span>
               </div>
             </div>
 
