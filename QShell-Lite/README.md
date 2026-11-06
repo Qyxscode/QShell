@@ -92,3 +92,11 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 
 需要 .NET Framework 4.0 的 `csc.exe`（`C:\Windows\Microsoft.NET\Framework\v4.0.30319\`）。
 `build.ps1` 必须是 **UTF-8 with BOM**（含中文，否则 PowerShell 5.1 按 GBK 解析报错）。
+
+## 使用授权
+
+与 QShell 桌面版适用同一份许可证：[LICENSE](../LICENSE)。
+
+**可以免费使用，禁止销售与转卖**——包括改名后、或修改代码后再拿去卖的版本。
+个人与组织内部使用不受限制；如需商业授权（销售、收费分发、集成进商业产品），
+须事先取得作者书面许可。完整条款见仓库根目录的 LICENSE 文件。
