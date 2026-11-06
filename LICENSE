@@ -1,21 +1,187 @@
-MIT License
+QShell 使用许可协议
+版本 1.0 · 2026-11-06
 
-Copyright (c) 2026 Qyxscode
+Copyright (c) 2026 Qyxscode. All rights reserved.
+版权所有 (c) 2026 Qyxscode。保留所有权利。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本许可证适用于本仓库中的全部内容，包括 QShell 桌面版（QShell-WinUI3 目录）
+与 QShell Lite（QShell-Lite 目录），以下统称「本软件」。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+This license applies to everything in this repository, including the QShell
+desktop edition (QShell-WinUI3) and QShell Lite (QShell-Lite), together
+referred to below as "the Software".
+
+================================================================================
+一、您被允许做的事（授权）
+================================================================================
+
+1. 免费下载、安装、运行本软件。个人使用、组织内部使用均可，不区分商业
+   环境或非商业环境，也不需要事先申请。
+
+2. 阅读、学习本软件的源代码，并修改源代码以满足自身需求。
+
+3. 将未经修改的原版，或您自己的修改版，**免费**提供给他人使用。但必须
+   同时满足以下条件：
+   a. 完整保留本许可证文件与版权声明；
+   b. 明确标注您所做的修改；
+   c. 不违反本协议第二条。
+
+================================================================================
+二、您不被允许做的事（禁止条款）
+================================================================================
+
+1. **禁止销售与转卖。** 不得出售、转售、拍卖本软件或其任何修改版，无论
+   是否更改名称、是否单独分发、是否作为其他产品或服务的一部分。
+
+2. **禁止收取费用。** 不得以任何形式就本软件或其修改版向他人收取费用，
+   包括但不限于：付费下载、订阅收费、捆绑销售溢价、广告分成、以本软件
+   作为付费服务的赠品或引流工具。
+
+3. **禁止冒名发布。** 不得在修改本软件后，以「QShell」的名义、或以原作者
+   的名义、或使用与原版相同或近似的名称/图标发布，从而让人误以为该版本
+   出自原作者。
+
+4. **禁止抹除标识。** 不得删除、隐藏或篡改本软件中的版权声明、许可证
+   信息、作者署名及其他权利标识。
+
+5. **禁止商业化分发。** 不得将本软件或其修改版作为商业产品、商业服务或
+   收费平台的一部分提供给任何第三方。
+
+================================================================================
+三、商业授权
+================================================================================
+
+如需将本软件用于销售、收费分发或集成进商业产品，必须事先取得作者的
+书面授权。未经授权的一切商业性使用均属违反本协议。
+
+================================================================================
+四、协议终止
+================================================================================
+
+您一旦违反本协议任一条款，本协议授予您的全部权利立即自动终止。此时您
+必须立即停止使用本软件，并删除您持有或控制的所有副本（含修改版）。
+
+================================================================================
+五、免责声明
+================================================================================
+
+本软件按「现状」提供，不附带任何明示或暗示的担保，包括但不限于对适销性、
+特定用途适用性和非侵权性的担保。在任何情况下，作者或版权持有人均不对
+因本软件或本软件的使用或其他交易而产生的任何索赔、损害或其他责任负责，
+无论是在合同诉讼、侵权行为还是其他方面。
+
+使用本软件连接远程设备时，请遵守目标设备与所在网络的管理规定。因使用
+本软件造成的任何直接或间接损失，由使用者自行承担。
+
+================================================================================
+六、适用法律
+================================================================================
+
+本协议适用中华人民共和国法律。若本协议的任何条款被认定为无效或不可
+执行，其余条款仍然完全有效。
+
+================================================================================
+联系方式：https://github.com/Qyxscode/QShell
+================================================================================
+
+
+================================================================================
+ENGLISH VERSION
+================================================================================
+
+QShell License
+Version 1.0 - 2026-11-06
+
+Copyright (c) 2026 Qyxscode. All rights reserved.
+
+This license applies to everything in this repository, including the QShell
+desktop edition (QShell-WinUI3) and QShell Lite (QShell-Lite), together
+referred to below as "the Software".
+
+--------------------------------------------------------------------------------
+1. WHAT YOU MAY DO
+--------------------------------------------------------------------------------
+
+1.1 You may download, install and run the Software free of charge, for
+personal use or internal use within an organization, in commercial or
+non-commercial environments alike, without prior permission.
+
+1.2 You may read and study the source code and modify it to suit your own
+needs.
+
+1.3 You may distribute the unmodified Software, or your modified version,
+to others **free of charge**, provided that you:
+    (a) keep this license file and all copyright notices intact;
+    (b) clearly mark the changes you made;
+    (c) do not violate Section 2.
+
+--------------------------------------------------------------------------------
+2. WHAT YOU MAY NOT DO
+--------------------------------------------------------------------------------
+
+2.1 **No selling or reselling.** You may not sell, resell or auction the
+Software or any modified version of it, whether or not renamed, whether
+distributed alone or as part of another product or service.
+
+2.2 **No charging fees.** You may not charge anyone in any form for the
+Software or a modified version, including but not limited to: paid
+downloads, subscriptions, bundle markups, advertising revenue sharing, or
+using the Software as a giveaway or traffic lure for a paid service.
+
+2.3 **No impersonation.** You may not publish a modified version under the
+name "QShell", under the original author's name, or under a confusingly
+similar name or icon that suggests the modified version comes from the
+original author.
+
+2.4 **No removal of notices.** You may not delete, hide or alter any
+copyright notice, license information, author attribution or other
+proprietary marking in the Software.
+
+2.5 **No commercial distribution.** You may not make the Software or a
+modified version available to any third party as part of a commercial
+product, commercial service or paid platform.
+
+--------------------------------------------------------------------------------
+3. COMMERCIAL LICENSE
+--------------------------------------------------------------------------------
+
+Any use of the Software for sale, paid distribution or integration into a
+commercial product requires prior written permission from the author. Any
+commercial use without such permission violates this license.
+
+--------------------------------------------------------------------------------
+4. TERMINATION
+--------------------------------------------------------------------------------
+
+Your rights under this license terminate automatically and immediately if
+you breach any term of this license. Upon termination you must stop using
+the Software and delete all copies in your possession or control, including
+modified versions.
+
+--------------------------------------------------------------------------------
+5. DISCLAIMER OF WARRANTY
+--------------------------------------------------------------------------------
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS
+IN THE SOFTWARE.
+
+When using the Software to connect to remote devices, you must comply with
+the management rules of those devices and networks. Any direct or indirect
+loss caused by the use of the Software is borne by the user.
+
+--------------------------------------------------------------------------------
+6. GOVERNING LAW
+--------------------------------------------------------------------------------
+
+This license is governed by the laws of the People's Republic of China. If
+any provision of this license is held invalid or unenforceable, the
+remaining provisions remain in full force and effect.
+
+--------------------------------------------------------------------------------
+Contact: https://github.com/Qyxscode/QShell
+--------------------------------------------------------------------------------
