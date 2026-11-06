@@ -18,12 +18,16 @@ mod session_state;
 mod ftp;
 #[path = "trace_route.rs"]
 mod trace_route;
+mod net_tools;
 pub mod generic_terminal;
 
 use ssh::{SshManager, start_ssh_session, write_ssh_session, resize_ssh_session, close_ssh_session};
 use generic_terminal::{GenericStreamManager, start_telnet_session, start_serial_session, start_local_shell_session, write_generic_session, resize_generic_session, close_generic_session};
 use config::{load_hosts_config, save_hosts_config, is_config_encrypted, unlock_config, set_config_encryption};
-use probe::probe_latency;
+use probe::{
+    detect_wol_candidates, ping_once, probe_latency, probe_wol_ip, scan_ports, scan_subnet, scan_subnet_batch,
+    tcp_ping_once, wake_on_lan,
+};
 use traffic::audit_host_traffic;
 use sftp::{
     list_sftp_files, sftp_mkdir, sftp_remove, sftp_rename,
@@ -43,6 +47,7 @@ use raw_rlogin_service::{start_raw_tcp_session, start_rlogin_session};
 use session_state::{save_session_state, load_session_state, clear_session_state};
 use ftp::{FtpManager, ftp_connect, ftp_list, ftp_download, ftp_close, ftp_upload, ftp_remove, ftp_rename, ftp_mkdir};
 use trace_route::start_trace_route;
+use net_tools::{dns_lookup, whois_lookup};
 use backup::{
     export_local_backup, import_local_backup, test_webdav_connection,
     webdav_upload_backup, webdav_download_backup
@@ -588,6 +593,16 @@ pub fn run() {
             unlock_config,
             set_config_encryption,
             probe_latency,
+            ping_once,
+            tcp_ping_once,
+            scan_ports,
+            scan_subnet,
+            scan_subnet_batch,
+            wake_on_lan,
+            detect_wol_candidates,
+            probe_wol_ip,
+            whois_lookup,
+            dns_lookup,
             list_sftp_files,
             sftp_home_dir,
             sftp_mkdir,
