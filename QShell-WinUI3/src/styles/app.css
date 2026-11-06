@@ -9701,3 +9701,917 @@ body.pane-splitting .pane-splitter.row::after {
   font-size: 11px;
   color: var(--text-sub);
 }
+
+/* ===== 网络工具箱：入口按钮 / 左侧浮层 / 可拖动浮窗 ===== */
+
+/* 卡片标题：左标题 + 右按钮 */
+.card-header-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.toolbox-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-capsule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-sub);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.toolbox-entry-btn:hover {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+.toolbox-entry-btn.is-open {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+  background: var(--bg-capsule);
+}
+
+/* ===== 左侧浮层（覆盖在左栏上方，不参与布局计算） ===== */
+.toolbox-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 300;
+  pointer-events: none;
+}
+
+.toolbox-panel {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  bottom: 8px;
+  width: 236px;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  border-radius: var(--radius-card);
+  pointer-events: auto;
+  overflow: hidden;
+}
+
+.toolbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-title);
+  border-bottom: 1px solid var(--border-capsule);
+}
+
+.toolbox-close,
+.tool-window-close {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.toolbox-close:hover,
+.tool-window-close:hover {
+  background: var(--bg-capsule-hover);
+  color: var(--text-title);
+}
+
+.toolbox-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.toolbox-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-main);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.toolbox-item:hover {
+  background: var(--bg-capsule);
+  border-color: var(--border-capsule);
+}
+
+.toolbox-item-label {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.toolbox-item-desc {
+  font-size: 10.5px;
+  color: var(--text-sub);
+  line-height: 1.3;
+}
+
+/* 滑入滑出 */
+.toolbox-slide-enter-active,
+.toolbox-slide-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.toolbox-slide-enter-active .toolbox-panel,
+.toolbox-slide-leave-active .toolbox-panel {
+  transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toolbox-slide-enter-from,
+.toolbox-slide-leave-to {
+  opacity: 0;
+}
+
+.toolbox-slide-enter-from .toolbox-panel,
+.toolbox-slide-leave-to .toolbox-panel {
+  transform: translateX(-12px);
+}
+
+/* ===== 浮窗层 ===== */
+.tool-window-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 320;
+  pointer-events: none;
+}
+
+.tool-window {
+  position: absolute;
+  width: 460px;
+  max-width: calc(100vw - 80px);
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  border-radius: 10px;
+  pointer-events: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tool-window-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 30px;
+  padding: 0 8px 0 12px;
+  background: var(--bg-capsule);
+  border-bottom: 1px solid var(--border-capsule);
+  cursor: move;
+  user-select: none;
+}
+
+.tool-window-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-title);
+}
+
+.tool-body {
+  padding: 10px;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-input {
+  flex: 1;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+
+.tool-input-num {
+  flex: none;
+  width: 54px;
+  text-align: center;
+}
+
+.tool-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-card);
+  border-radius: 6px;
+  background: var(--bg-capsule);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tool-btn:hover:not(:disabled) {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tool-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.tool-btn-primary:not(:disabled) {
+  background: var(--btn-primary-bg);
+  border-color: var(--btn-primary-bg);
+  color: var(--btn-primary-text);
+}
+
+.tool-btn-primary:hover:not(:disabled) {
+  background: var(--btn-primary-hover);
+  border-color: var(--btn-primary-hover);
+  color: var(--btn-primary-text);
+}
+
+.tool-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  color: var(--text-sub);
+  cursor: pointer;
+}
+
+.tool-hint {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.tool-table-wrap {
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border-capsule);
+  border-radius: 8px;
+}
+
+.tool-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11.5px;
+}
+
+.tool-table th,
+.tool-table td {
+  padding: 5px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-capsule);
+  white-space: nowrap;
+}
+
+.tool-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-sub-card);
+  color: var(--text-sub);
+  font-weight: 500;
+  font-size: 11px;
+  z-index: 1;
+}
+
+.tool-table .num {
+  text-align: right;
+}
+
+.tool-table .mono {
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.tool-table .is-ok {
+  color: var(--color-success);
+}
+
+.tool-table .is-bad {
+  color: var(--color-danger);
+}
+
+.tool-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.tool-empty {
+  text-align: center;
+  color: var(--text-sub);
+  padding: 14px 8px !important;
+}
+
+.tool-row-remove {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-sub);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tool-row-remove:hover {
+  background: var(--bg-capsule-hover);
+  color: var(--color-danger);
+}
+
+.tool-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 80px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+/* ===== 工具箱修正 v2 ===== */
+
+/* 1) 系统监控标题居左：.monitor-card 自身已有 14px 左右内边距，
+      标题再叠一层 14px 就变成了 28px，看起来偏右 */
+.monitor-card > .card-header-with-action {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 2) 左侧浮层：从窗口左缘滑出，完全覆盖左栏（含 .main-body 的 10px 内边距） */
+.toolbox-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 300;
+  pointer-events: none;
+}
+
+.toolbox-panel {
+  position: absolute;
+  top: -10px;
+  bottom: -10px;
+  left: -10px;
+  width: 296px;
+  border-radius: 0 var(--radius-card) var(--radius-card) 0;
+  border-left: 0;
+}
+
+/* 滑入：从左侧完全滑出 */
+.toolbox-slide-enter-from .toolbox-panel,
+.toolbox-slide-leave-to .toolbox-panel {
+  transform: translateX(-100%);
+}
+
+/* 3) 浮层里允许两行说明，宽度够的情况下按钮更舒展 */
+.toolbox-item {
+  padding: 9px 11px;
+}
+/* ===== 工具箱浮层：高度对齐终端卡片（不再上下超出） =====
+   之前是 top/bottom 各 -10px，导致浮层比终端卡片上下各多出 10px，
+   视觉上比"终端板块"更大。改成与 workspace-layout 齐平：
+   workspace-layout 的高度就等于终端卡片的高度（状态栏是它的兄弟节点）。 */
+
+.toolbox-panel {
+  top: 0;
+  bottom: 0;
+  left: -10px;
+  border-radius: 0 var(--radius-card) var(--radius-card) 0;
+}
+
+/* 滑入时整块从左侧移出，位移量按自身宽度 */
+.toolbox-slide-enter-from .toolbox-panel,
+.toolbox-slide-leave-to .toolbox-panel {
+  transform: translateX(-100%);
+}
+/* ===== Ping 历史面板（时间 / 次数 / 丢包 / 折线图） ===== */
+
+.tool-link-btn {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-primary);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tool-link-btn:hover {
+  text-decoration: underline;
+}
+
+.ping-row:hover {
+  background: var(--bg-capsule);
+}
+
+.ph-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.ph-target {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-title);
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.ph-count {
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.ph-stats {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.ph-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  background: var(--bg-sub-card);
+  border: 1px solid var(--border-capsule);
+  border-radius: 7px;
+}
+
+.ph-key {
+  font-size: 10px;
+  color: var(--text-sub);
+}
+
+.ph-val {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-main);
+  font-family: Consolas, "Cascadia Mono", monospace;
+}
+
+.ph-val i {
+  font-style: normal;
+  font-size: 9px;
+  font-weight: 400;
+  color: var(--text-sub);
+}
+
+.ph-chart {
+  margin-bottom: 10px;
+  padding: 8px 8px 4px;
+  background: var(--bg-sub-card);
+  border: 1px solid var(--border-capsule);
+  border-radius: 8px;
+}
+
+.ph-chart-svg {
+  width: 100%;
+  height: 90px;
+  display: block;
+  overflow: visible;
+}
+
+.ph-axis {
+  stroke: var(--border-card);
+  stroke-width: 1;
+}
+
+.ph-line {
+  fill: none;
+  stroke: var(--color-primary);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.ph-dot {
+  fill: var(--color-primary);
+}
+
+.ph-dot-bad {
+  fill: var(--color-danger);
+}
+
+.ph-chart-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--text-sub);
+  margin-top: 2px;
+}
+
+.ph-table-wrap {
+  max-height: 220px;
+}
+/* Ping 表格行尾的操作按钮（历史 / 移除） */
+.tool-row-action {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-sub);
+  cursor: pointer;
+  margin-right: 2px;
+  vertical-align: middle;
+}
+
+.tool-row-action:hover {
+  background: var(--bg-capsule-hover);
+  color: var(--color-primary);
+}
+
+/* 移除按钮与历史按钮对齐 */
+.tool-row-remove {
+  vertical-align: middle;
+}
+/* Ping 历史面板：清空按钮 */
+.ph-clear-btn {
+  margin-left: auto;
+  height: 20px;
+  padding: 0 9px;
+  border: 1px solid var(--border-capsule);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-sub);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+
+.ph-clear-btn:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+/* Ping 行内运行状态按钮 */
+.tool-row-action.is-running {
+  color: var(--color-success);
+}
+
+.tool-row-action.is-running:hover {
+  color: var(--color-danger);
+}
+
+/* 运行中的行，左侧给一条状态条暗示 */
+.ping-row:has(.tool-row-action.is-running) td:first-child {
+  position: relative;
+}
+
+.ping-row:has(.tool-row-action.is-running) td:first-child::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2px;
+  height: 12px;
+  border-radius: 1px;
+  background: var(--color-success);
+}
+/* 端口扫描：进度条 / 下拉框 / 开放计数 */
+
+.ps-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.ps-progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-track);
+  overflow: hidden;
+}
+
+.ps-progress-fill {
+  height: 100%;
+  background: var(--color-primary);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.ps-progress-text {
+  font-size: 11px;
+  color: var(--text-sub);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  white-space: nowrap;
+}
+
+.ps-open-count {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-sub);
+}
+
+.ps-open-count b {
+  color: var(--color-success);
+  font-weight: 600;
+}
+/* ===== 自定义下拉（替代原生 select） ===== */
+.tool-select {
+  position: relative;
+  display: inline-block;
+  flex: none;
+}
+
+.tool-select-trigger {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.tool-select-trigger:hover {
+  border-color: var(--color-primary);
+}
+
+.tool-select-arrow {
+  flex: none;
+  color: var(--text-sub);
+}
+
+.tool-select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  min-width: 100%;
+  padding: 4px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  border-radius: 8px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tool-select-option {
+  height: 24px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-main);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tool-select-option:hover {
+  background: var(--bg-capsule-hover);
+}
+
+.tool-select-option.is-active {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.tool-select-fade-enter-active,
+.tool-select-fade-leave-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.tool-select-fade-enter-from,
+.tool-select-fade-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+/* 子网扫描：概览统计 / 不确定进度条 */
+.subnet-summary {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.subnet-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 10px 8px;
+  background: var(--bg-sub-card);
+  border: 1px solid var(--border-capsule);
+  border-radius: 8px;
+}
+
+.subnet-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-primary);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  line-height: 1.1;
+}
+
+.subnet-stat-label {
+  font-size: 10.5px;
+  color: var(--text-sub);
+}
+
+/* 无法预估进度的条：来回滑动 */
+.ps-progress-indeterminate {
+  width: 35% !important;
+  animation: ps-indeterminate 1.3s ease-in-out infinite;
+}
+
+@keyframes ps-indeterminate {
+  0% { margin-left: 0; }
+  50% { margin-left: 65%; }
+  100% { margin-left: 0; }
+}
+
+.tool-subnetdetail .ph-table-wrap {
+  max-height: 300px;
+}
+
+/* ===== 网络唤醒 (WOL) ===== */
+.tool-btn-mini {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  vertical-align: middle;
+}
+
+.wol-probe-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-capsule);
+}
+
+.wol-probe-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.wol-probe-wrap {
+  margin-top: 8px;
+  max-height: 200px;
+}
+
+.wol-offline {
+  color: var(--color-warning);
+}
+
+.wol-message {
+  margin-top: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--bg-sub-card);
+  border: 1px solid var(--border-capsule);
+  font-size: 11.5px;
+  color: var(--text-sub);
+  line-height: 1.4;
+}
+/* WOL 探测结果里的主机名列 */
+.wol-hostname {
+  color: var(--text-main);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* WOL 表单：IP 输入框窄一些 */
+.tool-input-ip {
+  flex: 0 0 150px;
+}
+
+/* ===== Whois / DNS 查询 ===== */
+.tool-whois,
+.tool-dns {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 错误提示沿用 wol-message 的底框，只换文字颜色 */
+.wol-message.is-bad {
+  color: var(--color-warning);
+  border-color: var(--color-warning);
+  background: var(--color-warning-bg);
+}
+
+.tool-whois-bar {
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+}
+
+.whois-output {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  background: var(--bg-sub-card);
+  border: 1px solid var(--border-capsule);
+  border-radius: 6px;
+  font-family: var(--font-mono, Consolas, "Courier New", monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--text-main);
+  user-select: text;
+}
+
+.whois-empty {
+  padding: 18px 0;
+}
+
+.tool-dns-wrap {
+  margin-top: 10px;
+  max-height: 380px;
+}
+
+.dns-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-sub);
+}
+
+.dns-value {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-main);
+}
+
+.dns-elapsed {
+  margin-top: 6px;
+  text-align: right;
+}
+
+/* ===== 浮层描边 =====
+   去掉大面积阴影后，层次只剩 1px 边框。--border-card 在亮色下是 #CDCDD3，
+   衬在白底上圆角弧线几乎看不出来，所以这三个浮层单独加深一档。
+   仍然不用阴影，保持和其它面板一致的扁平观感。 */
+.toolbox-panel,
+.tool-window,
+.tool-select-menu {
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+[data-theme="light"] .toolbox-panel,
+[data-theme="light"] .tool-window,
+[data-theme="light"] .tool-select-menu {
+  border-color: rgba(0, 0, 0, 0.28);
+}
+

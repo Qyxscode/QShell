@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import Icons from "./components/Icons.vue";
+import ToolSelect from "./components/ToolSelect.vue";
 import TraceModal from "./components/TraceModal.vue";
 import ForwardModal, { type ForwardRule } from "./components/ForwardModal.vue";
 import FontSelectorModal from "./components/FontSelectorModal.vue";
@@ -108,36 +109,103 @@ function getTrafficProgress(h: HostItem): number {
   return Math.max(0, Math.min(100, pct));
 }
 
-// --- 流量单位自动换算 ---
+// --- 流量显示单位（按主机独立，可循环切换） ---
 // 用户在编辑里可能按 MB 记录，但卡片上 5000MB 不如 4.88GB 直观。
-// 这是一个纯显示偏好，默认开启；切换后记住，存在 localStorage。
-const trafficUnitAuto = ref<boolean>((() => {
-  try {
-    const raw = localStorage.getItem("qshell_traffic_unit_auto");
-    return raw === null ? true : raw === "true";
-  } catch {
-    return true;
-  }
-})());
+// 每台主机可以在 5 种显示模式间循环切换，状态按 host:port 记住：
+//   auto 自动：按数值大小挑合适单位（默认）
+//   raw  原始：保持编辑时设置的单位，不换算
+//   MB / GB / TB：强制用指定单位显示
+type TrafficUnitMode = "auto" | "raw" | "MB" | "GB" | "TB";
 
-function toggleTrafficUnitAuto() {
-  trafficUnitAuto.value = !trafficUnitAuto.value;
+const TRAFFIC_UNIT_MODE_KEY = "qshell_traffic_unit_mode_map";
+const TRAFFIC_UNIT_MODE_ORDER: TrafficUnitMode[] = ["auto", "raw", "MB", "GB", "TB"];
+
+function loadTrafficUnitModes(): Record<string, TrafficUnitMode> {
   try {
-    localStorage.setItem("qshell_traffic_unit_auto", String(trafficUnitAuto.value));
+    const raw = localStorage.getItem(TRAFFIC_UNIT_MODE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, TrafficUnitMode>;
+    }
+  } catch {
+    // 数据损坏就继续尝试迁移
+  }
+  // 迁移：旧版本只有一个全局开关（qshell_traffic_unit_auto）。
+  // 开 → auto，关 → raw；作为「默认档」而不是写死到每台主机，
+  // 这样以后逐台单独设置不会被它覆盖。
+  try {
+    const legacy = localStorage.getItem("qshell_traffic_unit_auto");
+    if (legacy !== null) {
+      const migrated: Record<string, TrafficUnitMode> = {
+        __default__: legacy === "true" ? "auto" : "raw",
+      };
+      localStorage.setItem(TRAFFIC_UNIT_MODE_KEY, JSON.stringify(migrated));
+      localStorage.removeItem("qshell_traffic_unit_auto");
+      return migrated;
+    }
+  } catch {
+    // 迁移失败则按全新安装处理
+  }
+  return {};
+}
+
+const trafficUnitModeMap = ref<Record<string, TrafficUnitMode>>(loadTrafficUnitModes());
+
+function trafficUnitKey(host?: HostItem): string {
+  if (!host) return "";
+  return `${host.host}:${host.port || 22}`;
+}
+
+/** 该主机当前的显示模式（没单独设置过就跟随默认档，再退到 auto） */
+function trafficUnitMode(host?: HostItem): TrafficUnitMode {
+  const map = trafficUnitModeMap.value;
+  const key = trafficUnitKey(host);
+  if (key && map[key]) return map[key];
+  if (map.__default__) return map.__default__;
+  return "auto";
+}
+
+/** 按钮上显示的文字：自动用图标，其它直接显示单位/原始 */
+function trafficUnitModeLabel(host?: HostItem): string {
+  const mode = trafficUnitMode(host);
+  if (mode === "auto") return "⇄";
+  if (mode === "raw") return "原";
+  return mode;
+}
+
+/** 循环切换：auto → raw → MB → GB → TB → auto */
+function cycleTrafficUnitMode(host: HostItem) {
+  const key = trafficUnitKey(host);
+  if (!key) return;
+  const current = trafficUnitMode(host);
+  const nextIndex =
+    (TRAFFIC_UNIT_MODE_ORDER.indexOf(current) + 1) % TRAFFIC_UNIT_MODE_ORDER.length;
+  trafficUnitModeMap.value = {
+    ...trafficUnitModeMap.value,
+    [key]: TRAFFIC_UNIT_MODE_ORDER[nextIndex],
+  };
+  try {
+    localStorage.setItem(TRAFFIC_UNIT_MODE_KEY, JSON.stringify(trafficUnitModeMap.value));
   } catch (_) {}
 }
 
-/** 按数值大小挑合适的单位：<1GB 用 MB，<1TB 用 GB，否则 TB；关闭换算时原样显示 */
-function formatTrafficValue(valueText?: string, unit?: string): string {
+/** 按当前模式格式化流量数值 */
+function formatTrafficValue(valueText?: string, unit?: string, host?: HostItem): string {
   const raw = String(valueText ?? "0");
   const upper = (unit || "GB").toUpperCase();
   const value = parseFloat(raw);
-  if (!trafficUnitAuto.value || !Number.isFinite(value) || value <= 0) {
+  const mode = trafficUnitMode(host);
+  if (mode === "raw" || !Number.isFinite(value) || value <= 0) {
     return `${raw}${upper}`;
   }
+  // 先统一换算到 MB，再按目标单位输出
   const toMb = upper.includes("TB") ? 1024 * 1024 : upper.includes("GB") ? 1024 : 1;
   const mb = value * toMb;
   const round2 = (n: number) => String(Math.round(n * 100) / 100);
+  if (mode === "MB") return `${round2(mb)}MB`;
+  if (mode === "GB") return `${round2(mb / 1024)}GB`;
+  if (mode === "TB") return `${round2(mb / (1024 * 1024))}TB`;
+  // auto：按数值大小挑合适单位
   if (mb < 1024) return `${round2(mb)}MB`;
   if (mb < 1024 * 1024) return `${round2(mb / 1024)}GB`;
   return `${round2(mb / (1024 * 1024))}TB`;
@@ -169,6 +237,1130 @@ if (typeof document !== "undefined" && !animationsEnabled.value) {
 // 左右侧边栏可调节宽度 (原版开阔黄金比例: 左286px, 右280px)
 const leftPanelWidth = ref(286);
 const rightPanelWidth = ref(280);
+
+// ===== 网络工具箱 =====
+// 左侧浮层是功能菜单，点条目打开可拖动的浮窗；浮窗可同时存在多个。
+type ToolKind = "ping" | "tcpping" | "portscan" | "subnet" | "wol" | "whois" | "dnslookup" | "pinghistory" | "scandetail" | "subnetdetail";
+
+interface ToolMenuItem {
+  key: ToolKind;
+  label: string;
+  desc: string;
+}
+
+const TOOL_MENU: ToolMenuItem[] = [
+  { key: "ping", label: "Ping", desc: "单目标 / 多目标 · 单次 / 持续" },
+  { key: "tcpping", label: "TCP Ping", desc: "指定端口的连接耗时" },
+  { key: "portscan", label: "端口扫描", desc: "常用端口或自定义范围" },
+  { key: "subnet", label: "子网扫描", desc: "整段网段在线探测" },
+  { key: "wol", label: "网络唤醒", desc: "发送 WOL 魔术包" },
+  { key: "whois", label: "Whois", desc: "域名 / IP 注册信息查询" },
+  { key: "dnslookup", label: "DNS 查询", desc: "A / AAAA / MX / TXT 等记录" },
+];
+
+interface ToolWindow {
+  id: string;
+  type: ToolKind;
+  x: number;
+  y: number;
+  z: number;
+}
+
+const showToolbox = ref(false);
+const toolWindows = ref<ToolWindow[]>([]);
+// 浮窗层级基准：低于 modal（99999），高于页面内容
+let toolWindowZ = 1000;
+
+function toolWindowPosKey(type: ToolKind): string {
+  return `qshell_tool_win_pos_${type}`;
+}
+
+function loadToolWindowPos(type: ToolKind): { x: number; y: number } {
+  try {
+    const raw = localStorage.getItem(toolWindowPosKey(type));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Number.isFinite(parsed.x) && Number.isFinite(parsed.y)) {
+        return { x: Number(parsed.x), y: Number(parsed.y) };
+      }
+    }
+  } catch (_) {}
+  return { x: 380, y: 120 };
+}
+
+function saveToolWindowPos(type: ToolKind, x: number, y: number) {
+  try {
+    localStorage.setItem(toolWindowPosKey(type), JSON.stringify({ x, y }));
+  } catch (_) {}
+}
+
+function bringToolWindowToFront(win: ToolWindow) {
+  win.z = ++toolWindowZ;
+}
+
+function openToolWindow(type: ToolKind) {
+  showToolbox.value = false;
+  const existing = toolWindows.value.find(w => w.type === type);
+  if (existing) {
+    bringToolWindowToFront(existing);
+    return;
+  }
+  const pos = loadToolWindowPos(type);
+  toolWindows.value.push({
+    id: `${type}-${Date.now()}`,
+    type,
+    x: pos.x,
+    y: pos.y,
+    z: ++toolWindowZ,
+  });
+}
+
+function closeToolWindow(id: string) {
+  // 关闭 Ping 历史面板时清空该目标的历史，避免下次打开时被旧数据干扰判断
+  const closing = toolWindows.value.find(w => w.id === id);
+  if (closing?.type === "pinghistory") clearPingHistory(activeHistoryRow());
+  // 关闭端口扫描相关浮窗时清空结果与进度
+  if (closing?.type === "portscan") {
+    stopPortScan();
+    clearPortScan();
+  }
+  if (closing?.type === "scandetail") clearPortScan();
+  stopPingTimerForWindow(id);
+  toolWindows.value = toolWindows.value.filter(w => w.id !== id);
+}
+
+function toolWindowTitle(type: ToolKind): string {
+  if (type === "pinghistory") {
+    const label = historyTargetLabel();
+    return label ? `探测历史 · ${label}` : "探测历史";
+  }
+  if (type === "scandetail") return "端口扫描详情";
+  if (type === "subnetdetail") return "子网扫描详情";
+  return TOOL_MENU.find(m => m.key === type)?.label || type;
+}
+
+// --- 浮窗拖动 ---
+let draggingToolWin: { id: string; offsetX: number; offsetY: number } | null = null;
+
+function beginToolWindowDrag(win: ToolWindow, e: PointerEvent) {
+  e.preventDefault();
+  bringToolWindowToFront(win);
+  draggingToolWin = { id: win.id, offsetX: e.clientX - win.x, offsetY: e.clientY - win.y };
+  window.addEventListener("pointermove", onToolWindowDragMove);
+  window.addEventListener("pointerup", endToolWindowDrag, { once: true });
+}
+
+function onToolWindowDragMove(e: PointerEvent) {
+  if (!draggingToolWin) return;
+  const win = toolWindows.value.find(w => w.id === draggingToolWin!.id);
+  if (!win) return;
+  // 钳制在可视区内，至少露出标题栏和一点边，避免拖到屏幕外抓不回来
+  win.x = Math.min(Math.max(-40, e.clientX - draggingToolWin.offsetX), window.innerWidth - 120);
+  win.y = Math.min(Math.max(0, e.clientY - draggingToolWin.offsetY), window.innerHeight - 40);
+}
+
+function endToolWindowDrag() {
+  if (draggingToolWin) {
+    const win = toolWindows.value.find(w => w.id === draggingToolWin!.id);
+    if (win) saveToolWindowPos(win.type, win.x, win.y);
+    draggingToolWin = null;
+  }
+  window.removeEventListener("pointermove", onToolWindowDragMove);
+}
+
+// --- Ping 工具状态 ---
+interface PingRecord {
+  seq: number;
+  time: string;
+  rtt: number;
+  ok: boolean;
+}
+
+interface PingRow {
+  id: string;
+  target: string;
+  sent: number;
+  recv: number;
+  lastRtt: number;
+  lastStatus: string;
+  history: number[];
+  records: PingRecord[];
+  /** 该目标是否正在探测（每个目标独立控制） */
+  running: boolean;
+  /** 该目标自己的定时器句柄 */
+  timerId: number | null;
+}
+
+const pingTargetInput = ref("");
+const pingRows = ref<PingRow[]>([]);
+const pingMode = ref<"once" | "continuous">("once");
+const pingCount = ref(4);
+const pingInterval = ref(1);
+let pingWindowId = "";
+
+/** 只要有一个目标在跑，整体就算运行中（用于禁用「全部开始」） */
+const pingRunning = computed(() => pingRows.value.some(r => r.running));
+
+function pingRowKey(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+function addPingTarget() {
+  const targets = pingTargetInput.value
+    .split(/[\s,;]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+  if (targets.length === 0) return;
+  for (const target of targets) {
+    if (pingRows.value.some(r => r.target === target)) continue;
+    pingRows.value.push({
+      id: pingRowKey(),
+      target,
+      sent: 0,
+      recv: 0,
+      lastRtt: -1,
+      lastStatus: "未测",
+      history: [],
+      records: [],
+      running: false,
+      timerId: null,
+    });
+  }
+  pingTargetInput.value = "";
+}
+
+function removePingTarget(id: string) {
+  const row = pingRows.value.find(r => r.id === id);
+  if (row) stopPingRow(row);
+  pingRows.value = pingRows.value.filter(r => r.id !== id);
+}
+
+function clearPingResults() {
+  pingRows.value.forEach(r => {
+    r.sent = 0;
+    r.recv = 0;
+    r.lastRtt = -1;
+    r.lastStatus = "未测";
+    r.history = [];
+    r.records = [];
+  });
+}
+
+/** 对单个目标探测一次并记录结果 */
+async function probePingRow(row: PingRow) {
+  try {
+    const res = await invoke<{ ok: boolean; rtt_ms: number; status: string }>("ping_once", {
+      host: row.target,
+      timeoutMs: 2000,
+    });
+    row.sent += 1;
+    const now = new Date();
+    const timeText = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+    if (res.ok) {
+      row.recv += 1;
+      row.lastRtt = res.rtt_ms;
+      row.lastStatus = "在线";
+      row.history.push(res.rtt_ms);
+      if (row.history.length > 120) row.history.shift();
+      row.records.push({ seq: row.sent, time: timeText, rtt: res.rtt_ms, ok: true });
+    } else {
+      row.lastRtt = -1;
+      row.lastStatus = res.status === "dns_fail" ? "域名解析失败" : res.status === "timeout" ? "超时" : "失败";
+      row.records.push({ seq: row.sent, time: timeText, rtt: -1, ok: false });
+    }
+    // 长跑时只保留最近 500 条，避免内存无限增长
+    if (row.records.length > 500) row.records.splice(0, row.records.length - 500);
+  } catch (_) {
+    row.sent += 1;
+    row.lastStatus = "探测异常";
+    const now2 = new Date();
+    const timeText2 = `${String(now2.getHours()).padStart(2, "0")}:${String(now2.getMinutes()).padStart(2, "0")}:${String(now2.getSeconds()).padStart(2, "0")}`;
+    row.records.push({ seq: row.sent, time: timeText2, rtt: -1, ok: false });
+    if (row.records.length > 500) row.records.splice(0, row.records.length - 500);
+  }
+}
+
+/** 单个目标的探测循环（每轮之间按全局间隔等待） */
+async function runPingRowLoop(row: PingRow) {
+  const totalRounds = pingMode.value === "once" ? Math.max(1, pingCount.value) : Infinity;
+  let round = 0;
+  while (row.running && round < totalRounds) {
+    await probePingRow(row);
+    round++;
+    if (!row.running) break;
+    if (round < totalRounds) {
+      await new Promise<void>(resolve => {
+        row.timerId = window.setTimeout(resolve, Math.max(200, pingInterval.value * 1000));
+      });
+      row.timerId = null;
+    }
+  }
+  row.running = false;
+}
+
+/** 启动单个目标 */
+function startPingRow(row: PingRow, windowId?: string) {
+  if (row.running) return;
+  if (windowId) pingWindowId = windowId;
+  row.running = true;
+  void runPingRowLoop(row);
+}
+
+/** 停止单个目标 */
+function stopPingRow(row: PingRow) {
+  row.running = false;
+  if (row.timerId) {
+    window.clearTimeout(row.timerId);
+    row.timerId = null;
+  }
+}
+
+/** 全部开始（也是「添加后直接开始」的入口） */
+function startPing(windowId: string) {
+  // 用户可能直接在输入框里敲了目标就点开始，这里顺手把它加进列表
+  if (pingTargetInput.value.trim()) addPingTarget();
+  if (pingRows.value.length === 0) return;
+  pingWindowId = windowId;
+  pingRows.value.forEach(row => {
+    if (!row.running) startPingRow(row, windowId);
+  });
+}
+
+/** 全部停止 */
+function stopPing() {
+  pingRows.value.forEach(row => stopPingRow(row));
+}
+
+function stopPingTimerForWindow(id: string) {
+  if (pingWindowId === id) stopPing();
+}
+
+// --- 探测历史面板（Ping / TCP Ping 共用） ---
+// 每个工具都可能需要「详情侧栏」，这里用 kind 区分数据来源。
+type HistoryKind = "ping" | "tcpping";
+const historyKind = ref<HistoryKind>("ping");
+const historyTargetId = ref<string>("");
+
+/** 历史面板里通用的行结构（PingRow / TcpPingRow 都满足） */
+interface HistoryRowLike {
+  id: string;
+  sent: number;
+  recv: number;
+  lastRtt: number;
+  lastStatus: string;
+  history: number[];
+  records: PingRecord[];
+}
+
+function activeHistoryRow(): HistoryRowLike | undefined {
+  if (historyKind.value === "ping") {
+    return pingRows.value.find(r => r.id === historyTargetId.value);
+  }
+  return tcpPingRows.value.find(r => r.id === historyTargetId.value);
+}
+
+/** 历史面板顶部显示的目标名（TCP 需要带端口） */
+function historyTargetLabel(): string {
+  const row = activeHistoryRow();
+  if (!row) return "";
+  if (historyKind.value === "tcpping") {
+    const tcp = row as unknown as TcpPingRow;
+    return `${tcp.host}:${tcp.port}`;
+  }
+  return (row as unknown as PingRow).target;
+}
+
+function openHistory(kind: HistoryKind, row: { id: string }) {
+  historyKind.value = kind;
+  historyTargetId.value = row.id;
+  const existing = toolWindows.value.find(w => w.type === "pinghistory");
+  if (existing) {
+    bringToolWindowToFront(existing);
+    return;
+  }
+  const pos = loadToolWindowPos("pinghistory");
+  toolWindows.value.push({
+    id: `pinghistory-${Date.now()}`,
+    type: "pinghistory",
+    x: pos.x,
+    y: pos.y,
+    z: ++toolWindowZ,
+  });
+}
+
+/** 清空某个目标的全部统计与历史（重新开始计数） */
+function clearPingHistory(row?: HistoryRowLike) {
+  if (!row) return;
+  row.sent = 0;
+  row.recv = 0;
+  row.lastRtt = -1;
+  row.lastStatus = "未测";
+  row.history = [];
+  row.records = [];
+}
+
+/** 当前目标的统计摘要 */
+function pingSummary(row?: HistoryRowLike) {
+  if (!row) return { sent: 0, recv: 0, loss: "-", min: "-", avg: "-", max: "-" };
+  const okList = row.records.filter(r => r.ok).map(r => r.rtt);
+  const loss = row.sent === 0 ? "-" : `${Math.round(((row.sent - row.recv) / row.sent) * 100)}%`;
+  if (okList.length === 0) {
+    return { sent: row.sent, recv: row.recv, loss, min: "-", avg: "-", max: "-" };
+  }
+  const min = Math.min(...okList);
+  const max = Math.max(...okList);
+  const avg = okList.reduce((a, b) => a + b, 0) / okList.length;
+  return {
+    sent: row.sent,
+    recv: row.recv,
+    loss,
+    min: min.toFixed(1),
+    avg: avg.toFixed(1),
+    max: max.toFixed(1),
+  };
+}
+
+/** 折线图：把最近 60 次的延迟映射成 SVG 折线，超时点单独标记 */
+function pingChartPath(row?: HistoryRowLike): { line: string; maxVal: number; points: { x: number; y: number; ok: boolean }[] } {
+  const W = 400;
+  const H = 90;
+  if (!row || row.records.length === 0) return { line: "", maxVal: 0, points: [] };
+  const recent = row.records.slice(-60);
+  const valid = recent.filter(r => r.ok).map(r => r.rtt);
+  const maxVal = valid.length > 0 ? Math.max(...valid, 1) : 1;
+  const stepX = recent.length > 1 ? W / (recent.length - 1) : W;
+  const points = recent.map((r, i) => ({
+    x: i * stepX,
+    // 超时点画在顶部，表示"没有响应"
+    y: r.ok ? H - (r.rtt / maxVal) * (H - 8) - 4 : 4,
+    ok: r.ok,
+  }));
+  // 折线只连接连续的成功点，超时处断开
+  let line = "";
+  let penDown = false;
+  points.forEach(p => {
+    if (p.ok) {
+      line += `${penDown ? "L" : "M"}${p.x.toFixed(1)},${p.y.toFixed(1)} `;
+      penDown = true;
+    } else {
+      penDown = false;
+    }
+  });
+  return { line: line.trim(), maxVal, points };
+}
+
+// --- TCP Ping 工具状态（结构与 Ping 相同，多一个 port 字段） ---
+interface TcpPingRow {
+  id: string;
+  host: string;
+  port: number;
+  sent: number;
+  recv: number;
+  lastRtt: number;
+  lastStatus: string;
+  history: number[];
+  records: PingRecord[];
+  running: boolean;
+  timerId: number | null;
+}
+
+const tcpPingInput = ref("");
+const tcpPingDefaultPort = ref(22);
+const tcpPingRows = ref<TcpPingRow[]>([]);
+const tcpPingRunning = computed(() => tcpPingRows.value.some(r => r.running));
+
+function tcpRowKey(): string {
+  return `tcp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+}
+
+/** 支持 "host:port" 写法；只写主机则套用默认端口 */
+function addTcpTarget() {
+  const tokens = tcpPingInput.value
+    .split(/[\s,;]+/)
+    .map(t => t.trim())
+    .filter(Boolean);
+  if (tokens.length === 0) return;
+  for (const token of tokens) {
+    let host = token;
+    let port = tcpPingDefaultPort.value || 22;
+    const m = token.match(/^(.+?):(\d{1,5})$/);
+    if (m) {
+      host = m[1];
+      port = Number(m[2]);
+    }
+    if (tcpPingRows.value.some(r => r.host === host && r.port === port)) continue;
+    tcpPingRows.value.push({
+      id: tcpRowKey(),
+      host,
+      port,
+      sent: 0,
+      recv: 0,
+      lastRtt: -1,
+      lastStatus: "未测",
+      history: [],
+      records: [],
+      running: false,
+      timerId: null,
+    });
+  }
+  tcpPingInput.value = "";
+}
+
+function removeTcpTarget(id: string) {
+  const row = tcpPingRows.value.find(r => r.id === id);
+  if (row) stopTcpRow(row);
+  tcpPingRows.value = tcpPingRows.value.filter(r => r.id !== id);
+}
+
+function clearTcpResults() {
+  tcpPingRows.value.forEach(r => {
+    r.sent = 0;
+    r.recv = 0;
+    r.lastRtt = -1;
+    r.lastStatus = "未测";
+    r.history = [];
+    r.records = [];
+  });
+}
+
+async function probeTcpRow(row: TcpPingRow) {
+  const now = new Date();
+  const timeText = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}:${String(now.getSeconds()).padStart(2, "0")}`;
+  try {
+    const res = await invoke<{ ok: boolean; rtt_ms: number; status: string }>("tcp_ping_once", {
+      host: row.host,
+      port: row.port,
+      timeoutMs: 2000,
+    });
+    row.sent += 1;
+    if (res.ok) {
+      row.recv += 1;
+      row.lastRtt = res.rtt_ms;
+      row.lastStatus = "开放";
+      row.history.push(res.rtt_ms);
+      if (row.history.length > 120) row.history.shift();
+      row.records.push({ seq: row.sent, time: timeText, rtt: res.rtt_ms, ok: true });
+    } else {
+      row.lastRtt = -1;
+      row.lastStatus =
+        res.status === "refused" ? "端口关闭" : res.status === "timeout" ? "超时" : res.status === "dns_fail" ? "域名解析失败" : "失败";
+      row.records.push({ seq: row.sent, time: timeText, rtt: -1, ok: false });
+    }
+    if (row.records.length > 500) row.records.splice(0, row.records.length - 500);
+  } catch (_) {
+    row.sent += 1;
+    row.lastStatus = "探测异常";
+    row.records.push({ seq: row.sent, time: timeText, rtt: -1, ok: false });
+    if (row.records.length > 500) row.records.splice(0, row.records.length - 500);
+  }
+}
+
+async function runTcpRowLoop(row: TcpPingRow) {
+  const totalRounds = pingMode.value === "once" ? Math.max(1, pingCount.value) : Infinity;
+  let round = 0;
+  while (row.running && round < totalRounds) {
+    await probeTcpRow(row);
+    round++;
+    if (!row.running) break;
+    if (round < totalRounds) {
+      await new Promise<void>(resolve => {
+        row.timerId = window.setTimeout(resolve, Math.max(200, pingInterval.value * 1000));
+      });
+      row.timerId = null;
+    }
+  }
+  row.running = false;
+}
+
+function startTcpRow(row: TcpPingRow) {
+  if (row.running) return;
+  row.running = true;
+  void runTcpRowLoop(row);
+}
+
+function stopTcpRow(row: TcpPingRow) {
+  row.running = false;
+  if (row.timerId) {
+    window.clearTimeout(row.timerId);
+    row.timerId = null;
+  }
+}
+
+function startAllTcp() {
+  if (tcpPingInput.value.trim()) addTcpTarget();
+  tcpPingRows.value.forEach(row => {
+    if (!row.running) startTcpRow(row);
+  });
+}
+
+function stopAllTcp() {
+  tcpPingRows.value.forEach(row => stopTcpRow(row));
+}
+
+function tcpLossRate(row: TcpPingRow): string {
+  if (row.sent === 0) return "-";
+  return `${Math.round(((row.sent - row.recv) / row.sent) * 100)}%`;
+}
+
+function tcpStatusClass(row: TcpPingRow): string {
+  if (row.sent === 0) return "";
+  return row.lastRtt >= 0 ? "is-ok" : "is-bad";
+}
+
+// --- 端口扫描 ---
+type PortScanMode = "common" | "custom" | "all";
+
+/** 常用端口（覆盖运维最常打交道的服务） */
+const COMMON_PORTS = [
+  21, 22, 23, 25, 53, 69, 80, 81, 88, 110, 111, 123, 135, 137, 138, 139,
+  143, 161, 389, 443, 445, 465, 514, 515, 587, 636, 873, 993, 995, 1080,
+  1433, 1521, 1723, 2049, 2181, 2375, 3000, 3306, 3389, 5432, 5672, 5900,
+  6379, 7001, 8000, 8080, 8081, 8443, 8888, 9000, 9090, 9200, 11211, 27017,
+];
+
+const PORT_SERVICE_NAMES: Record<number, string> = {
+  21: "ftp", 22: "ssh", 23: "telnet", 25: "smtp", 53: "dns", 69: "tftp",
+  80: "http", 88: "kerberos", 110: "pop3", 111: "rpcbind", 123: "ntp",
+  135: "msrpc", 137: "netbios", 139: "netbios-ssn", 143: "imap", 161: "snmp",
+  389: "ldap", 443: "https", 445: "smb", 465: "smtps", 514: "syslog",
+  587: "submission", 636: "ldaps", 873: "rsync", 993: "imaps", 995: "pop3s",
+  1080: "socks", 1433: "mssql", 1521: "oracle", 1723: "pptp", 2049: "nfs",
+  2181: "zookeeper", 2375: "docker", 3000: "dev", 3306: "mysql", 3389: "rdp",
+  5432: "postgres", 5672: "amqp", 5900: "vnc", 6379: "redis", 7001: "weblogic",
+  8000: "http-alt", 8080: "http-proxy", 8081: "http-alt", 8443: "https-alt",
+  8888: "http-alt", 9000: "http-alt", 9090: "web", 9200: "elasticsearch",
+  11211: "memcached", 27017: "mongodb",
+};
+
+interface PortScanRecord {
+  port: number;
+  open: boolean;
+  rtt: number;
+  status: string;
+}
+
+const portScanHost = ref("");
+const portScanMode = ref<PortScanMode>("common");
+const portScanCustom = ref("1-1024");
+const portScanTimeout = ref(1000);
+const portScanConcurrency = ref(64);
+const portScanRecords = ref<PortScanRecord[]>([]);
+const portScanRunning = ref(false);
+const portScanProgress = ref({ done: 0, total: 0 });
+let portScanAbort = false;
+
+/** 解析 "1-1024,3306,8080" 这类表达式 */
+function parsePortExpression(expr: string): number[] {
+  const out = new Set<number>();
+  const parts = expr.split(/[\s,;]+/).filter(Boolean);
+  for (const part of parts) {
+    const range = part.match(/^(\d{1,5})\s*-\s*(\d{1,5})$/);
+    if (range) {
+      const a = Math.max(1, Math.min(65535, Number(range[1])));
+      const b = Math.max(1, Math.min(65535, Number(range[2])));
+      const lo = Math.min(a, b);
+      const hi = Math.max(a, b);
+      // 避免误输入 1-65535 之外还叠加超长范围
+      if (hi - lo > 65534) continue;
+      for (let p = lo; p <= hi; p++) out.add(p);
+    } else {
+      const single = Number(part);
+      if (Number.isFinite(single) && single >= 1 && single <= 65535) out.add(single);
+    }
+  }
+  return Array.from(out).sort((a, b) => a - b);
+}
+
+function portScanTargets(): number[] {
+  if (portScanMode.value === "common") return COMMON_PORTS.slice();
+  if (portScanMode.value === "all") {
+    const all: number[] = [];
+    for (let p = 1; p <= 65535; p++) all.push(p);
+    return all;
+  }
+  return parsePortExpression(portScanCustom.value);
+}
+
+function portServiceName(port: number): string {
+  return PORT_SERVICE_NAMES[port] || "";
+}
+
+const portScanOpenList = computed(() => portScanRecords.value.filter(r => r.open));
+
+const portScanPercent = computed(() => {
+  const { done, total } = portScanProgress.value;
+  if (total === 0) return 0;
+  return Math.min(100, Math.round((done / total) * 100));
+});
+
+function stopPortScan() {
+  portScanAbort = true;
+  portScanRunning.value = false;
+}
+
+async function startPortScan() {
+  if (portScanRunning.value) return;
+  const host = portScanHost.value.trim();
+  if (!host) return;
+  const ports = portScanTargets();
+  if (ports.length === 0) return;
+
+  portScanAbort = false;
+  portScanRunning.value = true;
+  portScanRecords.value = [];
+  portScanProgress.value = { done: 0, total: ports.length };
+
+  // 分批调用后端，既能显示进度，也能随时中止
+  const BATCH = 200;
+  for (let i = 0; i < ports.length; i += BATCH) {
+    if (portScanAbort) break;
+    const batch = ports.slice(i, i + BATCH);
+    try {
+      const res = await invoke<Array<{ port: number; open: boolean; rtt_ms: number; status: string }>>(
+        "scan_ports",
+        {
+          host,
+          ports: batch,
+          timeoutMs: portScanTimeout.value,
+          concurrency: portScanConcurrency.value,
+        },
+      );
+      const mapped = res.map(r => ({
+        port: r.port,
+        open: r.open,
+        rtt: r.rtt_ms,
+        status: r.status,
+      }));
+      portScanRecords.value = portScanRecords.value.concat(mapped);
+    } catch (_) {
+      // 单批失败不中断整体流程
+    }
+    portScanProgress.value = {
+      done: Math.min(ports.length, i + BATCH),
+      total: ports.length,
+    };
+  }
+  portScanRecords.value.sort((a, b) => a.port - b.port);
+  portScanRunning.value = false;
+}
+
+function openPortScanDetail() {
+  const existing = toolWindows.value.find(w => w.type === "scandetail");
+  if (existing) {
+    bringToolWindowToFront(existing);
+    return;
+  }
+  const pos = loadToolWindowPos("scandetail");
+  toolWindows.value.push({
+    id: `scandetail-${Date.now()}`,
+    type: "scandetail",
+    x: pos.x,
+    y: pos.y,
+    z: ++toolWindowZ,
+  });
+}
+
+/** 清空扫描结果与进度 */
+function clearPortScan() {
+  portScanRecords.value = [];
+  portScanProgress.value = { done: 0, total: 0 };
+}
+
+
+
+// --- 子网扫描 ---
+interface SubnetHostRecord {
+  ip: string;
+  alive: boolean;
+  rtt: number;
+  mac: string;
+  deviceHint: string;
+}
+
+const subnetInput = ref("192.168.1.0/24");
+const subnetTimeout = ref(600);
+const subnetConcurrency = ref(64);
+const subnetHosts = ref<SubnetHostRecord[]>([]);
+const subnetRunning = ref(false);
+const subnetPercent = computed(() => {
+  const { done, total } = subnetProgress.value;
+  if (total === 0) return 0;
+  return Math.min(100, Math.round((done / total) * 100));
+});
+const subnetProgress = ref({ done: 0, total: 0 });
+let subnetAbort = false;
+
+
+function stopSubnetScan() {
+  subnetAbort = true;
+  subnetRunning.value = false;
+}
+
+function clearSubnetScan() {
+  subnetHosts.value = [];
+  subnetProgress.value = { done: 0, total: 0 };
+}
+
+/** 把 "192.168.1.0/24" 或 "192.168.1.1-254" 展开成 IP 列表 */
+function expandCidrInput(expr: string): string[] {
+  const text = expr.trim();
+  if (!text) return [];
+  const out: string[] = [];
+  const slash = text.split("/");
+  if (slash.length === 2) {
+    const base = slash[0].trim();
+    let prefix = Number(slash[1].trim());
+    const parts = base.split(".").map(Number);
+    if (parts.length !== 4 || parts.some(n => !Number.isFinite(n) || n < 0 || n > 255)) return [];
+    if (!Number.isFinite(prefix) || prefix < 0 || prefix > 32) return [];
+    // 限制最大扫描规模，避免误扫大网段（/22 = 1022 台）
+    prefix = Math.max(prefix, 22);
+    const ipToInt = (p: number[]) => ((p[0] << 24) >>> 0) + (p[1] << 16) + (p[2] << 8) + p[3];
+    const intToIp = (v: number) => [(v >>> 24) & 255, (v >>> 16) & 255, (v >>> 8) & 255, v & 255].join(".");
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+    const network = (ipToInt(parts) & mask) >>> 0;
+    const total = 2 ** (32 - prefix);
+    for (let i = 1; i < total - 1; i++) out.push(intToIp(network + i));
+    return out;
+  }
+  const dash = text.split("-");
+  if (dash.length === 2) {
+    const head = dash[0].trim();
+    const tail = Number(dash[1].trim());
+    const dot = head.lastIndexOf(".");
+    if (dot < 0 || !Number.isFinite(tail)) return [];
+    const prefix = head.slice(0, dot);
+    const start = Number(head.slice(dot + 1));
+    if (!Number.isFinite(start)) return [];
+    const lo = Math.max(1, Math.min(start, tail));
+    const hi = Math.min(254, Math.max(start, tail));
+    for (let n = lo; n <= hi; n++) out.push(`${prefix}.${n}`);
+  }
+  return out;
+}
+
+async function startSubnetScan() {
+  if (subnetRunning.value) return;
+  const ips = expandCidrInput(subnetInput.value);
+  if (ips.length === 0) return;
+
+  subnetAbort = false;
+  subnetRunning.value = true;
+  subnetHosts.value = [];
+  subnetProgress.value = { done: 0, total: ips.length };
+
+  // 分批探测：每批返回就立即追加，做到「边扫边出结果」
+  const BATCH = 32;
+  for (let i = 0; i < ips.length; i += BATCH) {
+    if (subnetAbort) break;
+    const batch = ips.slice(i, i + BATCH);
+    try {
+      const res = await invoke<Array<{ ip: string; alive: boolean; rtt_ms: number; mac: string; device_hint: string }>>(
+        "scan_subnet_batch",
+        {
+          ips: batch,
+          timeoutMs: subnetTimeout.value,
+          concurrency: subnetConcurrency.value,
+        },
+      );
+      if (subnetAbort) break;
+      const mapped = res.map(r => ({
+        ip: r.ip,
+        alive: r.alive,
+        rtt: r.rtt_ms,
+        mac: r.mac,
+        deviceHint: r.device_hint,
+      }));
+      // 按 IP 排序后合并，列表始终整齐
+      subnetHosts.value = subnetHosts.value.concat(mapped).sort((a, b) => {
+        const pa = a.ip.split(".").map(Number);
+        const pb = b.ip.split(".").map(Number);
+        for (let k = 0; k < 4; k++) {
+          if (pa[k] !== pb[k]) return pa[k] - pb[k];
+        }
+        return 0;
+      });
+    } catch (_) {
+      // 单批失败继续下一批
+    }
+    subnetProgress.value = {
+      done: Math.min(ips.length, i + BATCH),
+      total: ips.length,
+    };
+  }
+  subnetRunning.value = false;
+}
+
+function openSubnetDetail() {
+  const existing = toolWindows.value.find(w => w.type === "subnetdetail");
+  if (existing) {
+    bringToolWindowToFront(existing);
+    return;
+  }
+  const pos = loadToolWindowPos("subnetdetail");
+  toolWindows.value.push({
+    id: `subnetdetail-${Date.now()}`,
+    type: "subnetdetail",
+    x: pos.x,
+    y: pos.y,
+    z: ++toolWindowZ,
+  });
+}
+
+// --- 网络唤醒 (WOL) ---
+interface WolDevice {
+  id: string;
+  name: string;
+  mac: string;
+  broadcast: string;
+  port: number;
+  /** 设备 IP（可选）：填了会额外发单播，某些网卡只认单播 */
+  ip: string;
+}
+
+interface WolProbeResult {
+  ip: string;
+  mac: string;
+  alive: boolean;
+  hostname: string;
+  hint: string;
+}
+
+const WOL_STORE_KEY = "qshell_wol_devices";
+
+function loadWolDevices(): WolDevice[] {
+  try {
+    const raw = localStorage.getItem(WOL_STORE_KEY);
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (Array.isArray(parsed)) return parsed as WolDevice[];
+  } catch {
+    // 数据损坏按空处理
+  }
+  return [];
+}
+
+function saveWolDevices() {
+  try {
+    localStorage.setItem(WOL_STORE_KEY, JSON.stringify(wolDevices.value));
+  } catch (_) {}
+}
+
+const wolDevices = ref<WolDevice[]>(loadWolDevices());
+const wolNameInput = ref("");
+const wolMacInput = ref("");
+const wolIpInput = ref("");
+const wolBroadcastInput = ref("");
+const wolPortInput = ref(9);
+const wolSending = ref<string>("");
+const wolMessage = ref("");
+
+// 探测
+const wolProbeCidr = ref("192.168.1.0/24");
+const wolProbing = ref(false);
+const wolProbeResults = ref<WolProbeResult[]>([]);
+const wolSingleIp = ref("");
+const wolSingleProbing = ref(false);
+
+/** 规范化 MAC 显示成 AA:BB:CC:DD:EE:FF */
+function normalizeMac(input: string): string {
+  const hex = input.replace(/[^0-9a-fA-F]/g, "").toUpperCase();
+  if (hex.length !== 12) return input.trim();
+  return hex.match(/.{2}/g)!.join(":");
+}
+
+function addWolDeviceFromForm() {
+  const mac = normalizeMac(wolMacInput.value);
+  const hex = mac.replace(/[^0-9A-Fa-f]/g, "");
+  if (hex.length !== 12) {
+    wolMessage.value = "MAC 需要 12 位十六进制字符";
+    return;
+  }
+  if (wolDevices.value.some(d => d.mac === mac)) {
+    wolMessage.value = "这个 MAC 已经在列表里了";
+    return;
+  }
+  wolDevices.value.push({
+    id: `wol-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: wolNameInput.value.trim() || mac,
+    mac,
+    broadcast: wolBroadcastInput.value.trim(),
+    port: wolPortInput.value || 9,
+    ip: wolIpInput.value.trim(),
+  });
+  saveWolDevices();
+  wolMessage.value = "";
+  wolNameInput.value = "";
+  wolMacInput.value = "";
+  wolIpInput.value = "";
+}
+
+function removeWolDevice(id: string) {
+  wolDevices.value = wolDevices.value.filter(d => d.id !== id);
+  saveWolDevices();
+}
+
+async function wakeDevice(device: WolDevice) {
+  wolSending.value = device.id;
+  wolMessage.value = "";
+  try {
+    const msg = await invoke<string>("wake_on_lan", {
+      mac: device.mac,
+      // 旧版本把默认广播地址存成了 255.255.255.255，那个地址在交换机上会被丢弃，
+      // 这里统一当作「自动」，让后端按网段定向广播
+      broadcast: device.broadcast && device.broadcast !== "255.255.255.255" ? device.broadcast : null,
+      port: device.port,
+      targetIp: device.ip || null,
+    });
+    wolMessage.value = `${device.name}：${msg}`;
+  } catch (e) {
+    wolMessage.value = `${device.name}：${String(e)}`;
+  }
+  wolSending.value = "";
+}
+
+/** 指定单个 IP 探测（适合知道 IP 但不记得 MAC） */
+async function probeSingleWolIp() {
+  const ip = wolSingleIp.value.trim();
+  if (!ip || wolSingleProbing.value) return;
+  wolSingleProbing.value = true;
+  wolMessage.value = "";
+  try {
+    const res = await invoke<WolProbeResult>("probe_wol_ip", { ip });
+    // 合并进探测列表（同一 IP 覆盖）
+    const rest = wolProbeResults.value.filter(r => r.ip !== res.ip);
+    wolProbeResults.value = [res, ...rest];
+    if (!res.mac) {
+      wolMessage.value = `${ip} 没有拿到 MAC：可能设备完全断电，或网卡未保持待机（BIOS 里需开启 WOL / 关闭 ErP）`;
+    }
+  } catch (e) {
+    wolMessage.value = `探测失败：${String(e)}`;
+  }
+  wolSingleProbing.value = false;
+}
+
+async function detectWolDevices() {
+  if (wolProbing.value) return;
+  wolProbing.value = true;
+  wolMessage.value = "";
+  try {
+    const res = await invoke<WolProbeResult[]>("detect_wol_candidates", {
+      cidr: wolProbeCidr.value.trim(),
+      timeoutMs: 500,
+    });
+    wolProbeResults.value = res;
+    if (res.length === 0) {
+      wolMessage.value = "没有探测到设备（ARP 表里还没有这个网段的记录）";
+    }
+  } catch (e) {
+    wolMessage.value = `探测失败：${String(e)}`;
+  }
+  wolProbing.value = false;
+}
+
+/** 把探测结果加进设备列表 */
+function addProbedDevice(item: WolProbeResult) {
+  const mac = normalizeMac(item.mac);
+  if (wolDevices.value.some(d => d.mac === mac)) {
+    wolMessage.value = "这个 MAC 已经在列表里了";
+    return;
+  }
+  wolDevices.value.push({
+    id: `wol-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: item.hostname || item.ip,
+    mac,
+    broadcast: wolBroadcastInput.value.trim(),
+    port: wolPortInput.value || 9,
+    ip: item.ip,
+  });
+  saveWolDevices();
+  wolMessage.value = `已添加 ${item.hostname || item.ip}（${mac}）`;
+}
+
+// --- Whois 工具 ---
+const whoisInput = ref("");
+const whoisRunning = ref(false);
+const whoisResult = ref("");
+const whoisError = ref("");
+const whoisCopied = ref(false);
+
+async function runWhois() {
+  const q = whoisInput.value.trim();
+  if (!q || whoisRunning.value) return;
+  whoisRunning.value = true;
+  whoisError.value = "";
+  whoisResult.value = "";
+  whoisCopied.value = false;
+  try {
+    whoisResult.value = await invoke<string>("whois_lookup", { query: q });
+  } catch (e) {
+    whoisError.value = String(e);
+  }
+  whoisRunning.value = false;
+}
+
+async function copyWhoisResult() {
+  if (!whoisResult.value) return;
+  try {
+    await navigator.clipboard.writeText(whoisResult.value);
+    whoisCopied.value = true;
+    window.setTimeout(() => (whoisCopied.value = false), 1200);
+  } catch (_) {}
+}
+
+// --- DNS 查询工具 ---
+interface DnsAnswerRow {
+  name: string;
+  rtype: string;
+  ttl: number;
+  value: string;
+}
+
+const DNS_TYPES = ["A", "AAAA", "CNAME", "MX", "NS", "TXT", "SOA", "PTR", "SRV", "CAA", "ANY"];
+const dnsTypeOptions = DNS_TYPES.map(t => ({ value: t, label: t }));
+
+const dnsInput = ref("");
+const dnsType = ref("A");
+const dnsRunning = ref(false);
+const dnsRows = ref<DnsAnswerRow[]>([]);
+const dnsError = ref("");
+const dnsElapsed = ref(0);
+const dnsQueriedName = ref("");
+
+async function runDnsLookup() {
+  const domain = dnsInput.value.trim();
+  if (!domain || dnsRunning.value) return;
+  dnsRunning.value = true;
+  dnsError.value = "";
+  dnsRows.value = [];
+  dnsQueriedName.value = domain;
+  const started = performance.now();
+  try {
+    const res = await invoke<DnsAnswerRow[]>("dns_lookup", {
+      domain,
+      recordType: dnsType.value,
+    });
+    dnsRows.value = res;
+    if (res.length === 0) dnsError.value = `没有查询到 ${dnsType.value} 记录`;
+  } catch (e) {
+    dnsError.value = String(e);
+  }
+  dnsElapsed.value = Math.round(performance.now() - started);
+  dnsRunning.value = false;
+}
+
+
+
+
+function pingLossRate(row: PingRow): string {
+  if (row.sent === 0) return "-";
+  return `${Math.round(((row.sent - row.recv) / row.sent) * 100)}%`;
+}
+
+function pingStatusClass(row: PingRow): string {
+  if (row.sent === 0) return "";
+  return row.lastRtt >= 0 ? "is-ok" : "is-bad";
+}
+
 
 // 主机卡片自由拖拽排序
 const draggingHostIndex = ref<number | null>(null);
@@ -534,7 +1726,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.2");
+const appVersion = ref("1.0.3");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -9233,7 +10425,24 @@ onUnmounted(() => {
         <aside class="left-panel" :style="{ width: leftPanelWidth + 'px', minWidth: leftPanelWidth + 'px' }">
           <!-- 上卡片：系统监控卡片 (自适应自然内容高度，严丝合缝无死板空隙) -->
           <div class="card-container monitor-card" :style="{ minHeight: leftMonitorCardHeight + 'px' }">
-            <div class="card-header-title">系统监控</div>
+            <div class="card-header-title card-header-with-action">
+              <span>系统监控</span>
+              <button
+                type="button"
+                class="toolbox-entry-btn"
+                :class="showToolbox ? 'is-open' : ''"
+                title="网络工具箱"
+                @click.stop="showToolbox = !showToolbox"
+              >
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" aria-hidden="true">
+                  <rect x="3" y="8.5" width="18" height="11" rx="2.2" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M9 8.5V6.4A2.4 2.4 0 0 1 11.4 4h1.2A2.4 2.4 0 0 1 15 6.4v2.1" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M3 13.2h18" stroke="currentColor" stroke-width="1.8"/>
+                  <path d="M10.6 13.2h2.8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+                </svg>
+                <span>工具</span>
+              </button>
+            </div>
             
             <div class="gauge-group">
               <div class="gauge-item">
@@ -9524,6 +10733,710 @@ onUnmounted(() => {
             </div>
           </div>
         </aside>
+
+        <!-- 网络工具箱：左侧浮层菜单（覆盖在左栏上方，不挤压布局） -->
+        <Transition name="toolbox-slide">
+          <div v-if="showToolbox" class="toolbox-overlay" @mousedown.self="showToolbox = false">
+            <div class="toolbox-panel" :style="{ width: (leftPanelWidth + 10) + 'px' }">
+              <div class="toolbox-head">
+                <span>网络工具箱</span>
+                <button class="toolbox-close" @click="showToolbox = false" title="关闭">✕</button>
+              </div>
+              <div class="toolbox-list">
+                <button
+                  v-for="item in TOOL_MENU"
+                  :key="item.key"
+                  class="toolbox-item"
+                  @click="openToolWindow(item.key)"
+                >
+                  <span class="toolbox-item-label">{{ item.label }}</span>
+                  <span class="toolbox-item-desc">{{ item.desc }}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </Transition>
+
+        <!-- 工具箱浮窗：可多开、可拖动 -->
+        <div class="tool-window-layer">
+          <div
+            v-for="win in toolWindows"
+            :key="win.id"
+            class="tool-window"
+            :class="'tool-window-' + win.type"
+            :style="{ left: win.x + 'px', top: win.y + 'px', zIndex: win.z }"
+            @pointerdown="bringToolWindowToFront(win)"
+          >
+            <div class="tool-window-head" @pointerdown="beginToolWindowDrag(win, $event)">
+              <span class="tool-window-title">{{ toolWindowTitle(win.type) }}</span>
+              <button class="tool-window-close" @click.stop="closeToolWindow(win.id)" title="关闭">✕</button>
+            </div>
+
+            <!-- Ping 工具 -->
+            <div v-if="win.type === 'ping'" class="tool-body tool-ping">
+              <div class="tool-row">
+                <input
+                  v-model="pingTargetInput"
+                  class="tool-input"
+                  placeholder="输入 IP 或域名，支持空格/逗号分隔批量添加"
+                  @keydown.enter="addPingTarget"
+                />
+                <button class="tool-btn" @click="addPingTarget">添加</button>
+              </div>
+
+              <div class="tool-row tool-ping-options">
+                <label class="tool-radio">
+                  <input type="radio" value="once" v-model="pingMode" /> 单次
+                </label>
+                <input
+                  v-if="pingMode === 'once'"
+                  v-model.number="pingCount"
+                  type="number"
+                  min="1"
+                  max="100"
+                  class="tool-input tool-input-num"
+                  title="次数"
+                />
+                <label class="tool-radio">
+                  <input type="radio" value="continuous" v-model="pingMode" /> 持续
+                </label>
+                <span class="tool-hint">间隔</span>
+                <input
+                  v-model.number="pingInterval"
+                  type="number"
+                  min="1"
+                  max="60"
+                  class="tool-input tool-input-num"
+                  title="间隔秒数"
+                />
+                <span class="tool-hint">秒</span>
+                <button class="tool-btn tool-btn-primary" :disabled="pingRows.length === 0" @click="startPing(win.id)">全部开始</button>
+                <button class="tool-btn" :disabled="!pingRunning" @click="stopPing">全部停止</button>
+                <button class="tool-btn" @click="clearPingResults">清空</button>
+              </div>
+
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>目标</th>
+                      <th class="num">延迟</th>
+                      <th class="num">丢包</th>
+                      <th>状态</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="pingRows.length === 0">
+                      <td colspan="5" class="tool-empty">添加目标后点击「开始」</td>
+                    </tr>
+                    <tr v-for="row in pingRows" :key="row.id" class="ping-row">
+                      <td class="mono">{{ row.target }}</td>
+                      <td class="num mono" :class="pingStatusClass(row)">
+                        {{ row.lastRtt < 0 ? "-" : row.lastRtt.toFixed(1) + " ms" }}
+                      </td>
+                      <td class="num mono">{{ pingLossRate(row) }}</td>
+                      <td :class="pingStatusClass(row)">{{ row.lastStatus }}</td>
+                      <td class="num">
+                        <!-- 单目标开始 / 停止 -->
+                        <button
+                          class="tool-row-action"
+                          :class="row.running ? 'is-running' : ''"
+                          @click="row.running ? stopPingRow(row) : startPingRow(row, win.id)"
+                          :title="row.running ? '停止这个目标' : '只开始这个目标'"
+                        >
+                          <svg v-if="!row.running" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                            <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
+                          </svg>
+                          <svg v-else viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                            <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />
+                          </svg>
+                        </button>
+                        <button class="tool-row-action" @click="openHistory('ping', row)" title="查看历史与折线图">
+                          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-hidden="true">
+                            <path d="M3 17.5l5.2-5.6 3.6 3.1L21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M21 6h-5.2M21 6v5.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </button>
+                        <button class="tool-row-remove" @click="removePingTarget(row.id)" title="移除">✕</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- Ping 历史：时间 / 次数 / 丢包 / 折线图 -->
+            <div v-else-if="win.type === 'pinghistory'" class="tool-body tool-ping-history">
+              <template v-if="activeHistoryRow()">
+                <div class="ph-head">
+                  <span class="ph-target">{{ historyTargetLabel() }}</span>
+                  <span class="ph-count">第 {{ activeHistoryRow()!.sent }} 次</span>
+                  <button class="ph-clear-btn" @click="clearPingHistory(activeHistoryRow())" title="清空该目标的全部统计与历史">
+                    清空记录
+                  </button>
+                </div>
+
+                <div class="ph-stats">
+                  <div class="ph-stat"><span class="ph-key">丢包</span><span class="ph-val">{{ pingSummary(activeHistoryRow()).loss }}</span></div>
+                  <div class="ph-stat"><span class="ph-key">最小</span><span class="ph-val">{{ pingSummary(activeHistoryRow()).min }} <i>ms</i></span></div>
+                  <div class="ph-stat"><span class="ph-key">平均</span><span class="ph-val">{{ pingSummary(activeHistoryRow()).avg }} <i>ms</i></span></div>
+                  <div class="ph-stat"><span class="ph-key">最大</span><span class="ph-val">{{ pingSummary(activeHistoryRow()).max }} <i>ms</i></span></div>
+                </div>
+
+                <div class="ph-chart">
+                  <svg viewBox="0 0 400 90" preserveAspectRatio="none" class="ph-chart-svg">
+                    <line x1="0" y1="86" x2="400" y2="86" class="ph-axis" />
+                    <path :d="pingChartPath(activeHistoryRow()).line" class="ph-line" />
+                    <circle
+                      v-for="(p, i) in pingChartPath(activeHistoryRow()).points"
+                      :key="'ph-pt-' + i"
+                      :cx="p.x"
+                      :cy="p.y"
+                      r="1.8"
+                      :class="p.ok ? 'ph-dot' : 'ph-dot-bad'"
+                    />
+                  </svg>
+                  <div class="ph-chart-axis">
+                    <span>最近 {{ pingChartPath(activeHistoryRow()).points.length }} 次</span>
+                    <span>峰值 {{ pingChartPath(activeHistoryRow()).maxVal.toFixed(1) }} ms</span>
+                  </div>
+                </div>
+
+                <div class="tool-table-wrap ph-table-wrap">
+                  <table class="tool-table">
+                    <thead>
+                      <tr>
+                        <th class="num">#</th>
+                        <th>时间</th>
+                        <th class="num">延迟</th>
+                        <th>结果</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="rec in activeHistoryRow()!.records.slice().reverse()" :key="rec.seq">
+                        <td class="num mono">{{ rec.seq }}</td>
+                        <td class="mono">{{ rec.time }}</td>
+                        <td class="num mono" :class="rec.ok ? 'is-ok' : 'is-bad'">
+                          {{ rec.ok ? rec.rtt.toFixed(1) + " ms" : "-" }}
+                        </td>
+                        <td :class="rec.ok ? 'is-ok' : 'is-bad'">{{ rec.ok ? "成功" : "超时" }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </template>
+              <div v-else class="tool-empty">在 Ping 面板里点击目标名查看历史</div>
+            </div>
+
+            <!-- TCP Ping：指定端口的连接耗时 -->
+            <div v-else-if="win.type === 'tcpping'" class="tool-body tool-tcpping">
+              <div class="tool-row">
+                <input
+                  v-model="tcpPingInput"
+                  class="tool-input"
+                  placeholder="主机或 host:port，支持空格/逗号批量添加"
+                  @keydown.enter="addTcpTarget"
+                />
+                <input
+                  v-model.number="tcpPingDefaultPort"
+                  type="number"
+                  min="1"
+                  max="65535"
+                  class="tool-input tool-input-num"
+                  title="默认端口（输入里没写端口时用这个）"
+                />
+                <button class="tool-btn" @click="addTcpTarget">添加</button>
+              </div>
+
+              <div class="tool-row tool-ping-options">
+                <label class="tool-radio">
+                  <input type="radio" value="once" v-model="pingMode" /> 单次
+                </label>
+                <input
+                  v-if="pingMode === 'once'"
+                  v-model.number="pingCount"
+                  type="number"
+                  min="1"
+                  max="100"
+                  class="tool-input tool-input-num"
+                  title="次数"
+                />
+                <label class="tool-radio">
+                  <input type="radio" value="continuous" v-model="pingMode" /> 持续
+                </label>
+                <span class="tool-hint">间隔</span>
+                <input
+                  v-model.number="pingInterval"
+                  type="number"
+                  min="1"
+                  max="60"
+                  class="tool-input tool-input-num"
+                  title="间隔秒数"
+                />
+                <span class="tool-hint">秒</span>
+                <button class="tool-btn tool-btn-primary" :disabled="tcpPingRows.length === 0" @click="startAllTcp">全部开始</button>
+                <button class="tool-btn" :disabled="!tcpPingRunning" @click="stopAllTcp">全部停止</button>
+                <button class="tool-btn" @click="clearTcpResults">清空</button>
+              </div>
+
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>目标</th>
+                      <th class="num">端口</th>
+                      <th class="num">耗时</th>
+                      <th class="num">失败率</th>
+                      <th>状态</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="tcpPingRows.length === 0">
+                      <td colspan="6" class="tool-empty">添加目标后点击「全部开始」</td>
+                    </tr>
+                    <tr v-for="row in tcpPingRows" :key="row.id" class="ping-row">
+                      <td class="mono">{{ row.host }}</td>
+                      <td class="num mono">{{ row.port }}</td>
+                      <td class="num mono" :class="tcpStatusClass(row)">
+                        {{ row.lastRtt < 0 ? "-" : row.lastRtt.toFixed(1) + " ms" }}
+                      </td>
+                      <td class="num mono">{{ tcpLossRate(row) }}</td>
+                      <td :class="tcpStatusClass(row)">{{ row.lastStatus }}</td>
+                      <td class="num">
+                        <button
+                          class="tool-row-action"
+                          :class="row.running ? 'is-running' : ''"
+                          @click="row.running ? stopTcpRow(row) : startTcpRow(row)"
+                          :title="row.running ? '停止这个目标' : '只开始这个目标'"
+                        >
+                          <svg v-if="!row.running" viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                            <path d="M8 5.5v13l11-6.5z" fill="currentColor" />
+                          </svg>
+                          <svg v-else viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                            <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />
+                          </svg>
+                        </button>
+                        <button class="tool-row-action" @click="openHistory('tcpping', row)" title="查看历史与折线图">
+                          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" aria-hidden="true">
+                            <path d="M3 17.5l5.2-5.6 3.6 3.1L21 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                            <path d="M21 6h-5.2M21 6v5.2" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        </button>
+                        <button class="tool-row-remove" @click="removeTcpTarget(row.id)" title="移除">✕</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 端口扫描 -->
+            <div v-else-if="win.type === 'portscan'" class="tool-body tool-portscan">
+              <div class="tool-row">
+                <input v-model="portScanHost" class="tool-input" placeholder="目标 IP 或域名" @keydown.enter="startPortScan" />
+              </div>
+
+              <div class="tool-row tool-ping-options">
+                <label class="tool-radio"><input type="radio" value="common" v-model="portScanMode" /> 常用端口</label>
+                <label class="tool-radio"><input type="radio" value="custom" v-model="portScanMode" /> 自定义</label>
+                <label class="tool-radio"><input type="radio" value="all" v-model="portScanMode" /> 全部 1-65535</label>
+              </div>
+
+              <div v-if="portScanMode === 'custom'" class="tool-row">
+                <input v-model="portScanCustom" class="tool-input" placeholder="例如 1-1024,3306,8080" />
+              </div>
+
+              <div class="tool-row tool-ping-options">
+                <span class="tool-hint">超时</span>
+                <ToolSelect
+                  v-model="portScanTimeout"
+                  :options="[
+                    { value: 300, label: '300 ms' },
+                    { value: 600, label: '600 ms' },
+                    { value: 1000, label: '1 s' },
+                    { value: 2000, label: '2 s' },
+                  ]"
+                  :width="88"
+                />
+                <span class="tool-hint">并发</span>
+                <ToolSelect
+                  v-model="portScanConcurrency"
+                  :options="[
+                    { value: 32, label: '32' },
+                    { value: 64, label: '64' },
+                    { value: 128, label: '128' },
+                    { value: 256, label: '256' },
+                  ]"
+                  :width="70"
+                />
+                <button class="tool-btn tool-btn-primary" :disabled="portScanRunning || !portScanHost.trim()" @click="startPortScan">开始扫描</button>
+                <button class="tool-btn" :disabled="!portScanRunning" @click="stopPortScan">停止</button>
+                <button class="tool-btn" @click="openPortScanDetail">详情</button>
+                <button class="tool-btn" :disabled="portScanRecords.length === 0" @click="clearPortScan">清空</button>
+              </div>
+
+              <div v-if="portScanRunning || portScanProgress.done > 0" class="ps-progress">
+                <div class="ps-progress-bar">
+                  <div class="ps-progress-fill" :style="{ width: portScanPercent + '%' }"></div>
+                </div>
+                <span class="ps-progress-text">
+                  {{ portScanPercent }}% · {{ portScanProgress.done }}/{{ portScanProgress.total }}
+                </span>
+              </div>
+
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th class="num">端口</th>
+                      <th>服务</th>
+                      <th class="num">耗时</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="portScanOpenList.length === 0">
+                      <td colspan="3" class="tool-empty">
+                        {{ portScanRunning ? "扫描中…" : "暂无开放端口" }}
+                      </td>
+                    </tr>
+                    <tr v-for="rec in portScanOpenList" :key="rec.port">
+                      <td class="num mono is-ok">{{ rec.port }}</td>
+                      <td class="mono">{{ portServiceName(rec.port) }}</td>
+                      <td class="num mono">{{ rec.rtt.toFixed(1) }} ms</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="ps-open-count">开放 <b>{{ portScanOpenList.length }}</b> 个 · 已扫 {{ portScanRecords.length }} 个端口</div>
+            </div>
+
+            <!-- 端口扫描详情：列出全部端口状态 -->
+            <div v-else-if="win.type === 'scandetail'" class="tool-body tool-scandetail">
+              <div class="ph-head">
+                <span class="ph-target">{{ portScanHost || "未指定目标" }}</span>
+                <span class="ph-count">共 {{ portScanRecords.length }} 个端口</span>
+                <button class="ph-clear-btn" @click="clearPortScan" title="清空扫描结果">清空结果</button>
+              </div>
+              <div class="tool-table-wrap ph-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th class="num">端口</th>
+                      <th>服务</th>
+                      <th class="num">耗时</th>
+                      <th>状态</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="portScanRecords.length === 0">
+                      <td colspan="4" class="tool-empty">还没有扫描结果</td>
+                    </tr>
+                    <tr v-for="rec in portScanRecords" :key="rec.port">
+                      <td class="num mono" :class="rec.open ? 'is-ok' : ''">{{ rec.port }}</td>
+                      <td class="mono">{{ portServiceName(rec.port) }}</td>
+                      <td class="num mono">{{ rec.open ? rec.rtt.toFixed(1) + " ms" : "-" }}</td>
+                      <td :class="rec.open ? 'is-ok' : 'is-bad'">
+                        {{ rec.open ? "开放" : rec.status === "closed" ? "关闭" : rec.status === "timeout" ? "超时" : "失败" }}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 子网扫描 -->
+            <div v-else-if="win.type === 'subnet'" class="tool-body tool-subnet">
+              <div class="tool-row">
+                <input v-model="subnetInput" class="tool-input" placeholder="例如 192.168.1.0/24 或 192.168.1.1-254" @keydown.enter="startSubnetScan" />
+              </div>
+
+              <div class="tool-row tool-ping-options">
+                <span class="tool-hint">超时</span>
+                <ToolSelect
+                  v-model="subnetTimeout"
+                  :options="[
+                    { value: 300, label: '300 ms' },
+                    { value: 600, label: '600 ms' },
+                    { value: 1000, label: '1 s' },
+                    { value: 2000, label: '2 s' },
+                  ]"
+                  :width="88"
+                />
+                <span class="tool-hint">并发</span>
+                <ToolSelect
+                  v-model="subnetConcurrency"
+                  :options="[
+                    { value: 32, label: '32' },
+                    { value: 64, label: '64' },
+                    { value: 128, label: '128' },
+                    { value: 256, label: '256' },
+                  ]"
+                  :width="70"
+                />
+                <button class="tool-btn tool-btn-primary" :disabled="subnetRunning || !subnetInput.trim()" @click="startSubnetScan">开始扫描</button>
+                <button class="tool-btn" :disabled="!subnetRunning" @click="stopSubnetScan">停止</button>
+                <button class="tool-btn" @click="openSubnetDetail">详情</button>
+                <button class="tool-btn" :disabled="subnetHosts.length === 0" @click="clearSubnetScan">清空</button>
+              </div>
+
+              <div v-if="subnetRunning || subnetProgress.done > 0" class="ps-progress">
+                <div class="ps-progress-bar">
+                  <div class="ps-progress-fill" :style="{ width: subnetPercent + '%' }"></div>
+                </div>
+                <span class="ps-progress-text">
+                  {{ subnetPercent }}% · {{ subnetProgress.done }}/{{ subnetProgress.total }}
+                </span>
+              </div>
+
+              <div class="subnet-summary">
+                <div class="subnet-stat">
+                  <span class="subnet-stat-value">{{ subnetHosts.length }}</span>
+                  <span class="subnet-stat-label">在线设备</span>
+                </div>
+                <div class="subnet-stat">
+                  <span class="subnet-stat-value">{{ subnetHosts.filter(h => h.mac).length }}</span>
+                  <span class="subnet-stat-label">识别到 MAC</span>
+                </div>
+              </div>
+
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>IP 地址</th>
+                      <th>设备</th>
+                      <th class="num">延迟</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="subnetHosts.length === 0">
+                      <td colspan="3" class="tool-empty">{{ subnetRunning ? "扫描中…" : "还没有扫描结果" }}</td>
+                    </tr>
+                    <tr v-for="host in subnetHosts" :key="host.ip">
+                      <td class="mono is-ok">{{ host.ip }}</td>
+                      <td>{{ host.deviceHint }}</td>
+                      <td class="num mono">{{ host.rtt.toFixed(0) }} ms</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 子网扫描详情：设备 / MAC / IP / 类型 -->
+            <div v-else-if="win.type === 'subnetdetail'" class="tool-body tool-subnetdetail">
+              <div class="ph-head">
+                <span class="ph-target">{{ subnetInput || "未指定网段" }}</span>
+                <span class="ph-count">在线 {{ subnetHosts.length }} 台</span>
+                <button class="ph-clear-btn" @click="clearSubnetScan" title="清空扫描结果">清空结果</button>
+              </div>
+              <div class="tool-table-wrap ph-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>IP 地址</th>
+                      <th>MAC 地址</th>
+                      <th>设备类型</th>
+                      <th class="num">延迟</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="subnetHosts.length === 0">
+                      <td colspan="4" class="tool-empty">还没有扫描结果</td>
+                    </tr>
+                    <tr v-for="host in subnetHosts" :key="host.ip">
+                      <td class="mono is-ok">{{ host.ip }}</td>
+                      <td class="mono">{{ host.mac || "—" }}</td>
+                      <td>{{ host.deviceHint }}</td>
+                      <td class="num mono">{{ host.rtt.toFixed(0) }} ms</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="ps-open-count">提示：MAC 取自系统 ARP 表，刚开机或未通信过的设备可能显示为空。</div>
+            </div>
+
+            <!-- 网络唤醒 (WOL) -->
+            <div v-else-if="win.type === 'wol'" class="tool-body tool-wol">
+              <div class="tool-row">
+                <input v-model="wolNameInput" class="tool-input" placeholder="名称（可选）" />
+                <input v-model="wolIpInput" class="tool-input tool-input-ip" placeholder="IP（可选，填了会发单播）" />
+                <input v-model="wolMacInput" class="tool-input" placeholder="MAC 如 AA:BB:CC:DD:EE:FF" @keydown.enter="addWolDeviceFromForm" />
+              </div>
+              <div class="tool-row">
+                <input v-model="wolBroadcastInput" class="tool-input" placeholder="广播地址（留空=自动按所有网段广播）" />
+                <ToolSelect
+                  v-model="wolPortInput"
+                  :options="[
+                    { value: 9, label: '端口 9' },
+                    { value: 7, label: '端口 7' },
+                  ]"
+                  :width="86"
+                />
+                <button class="tool-btn tool-btn-primary" @click="addWolDeviceFromForm">添加</button>
+              </div>
+
+              <div class="tool-table-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>IP</th>
+                      <th>MAC</th>
+                      <th>广播</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="wolDevices.length === 0">
+                      <td colspan="5" class="tool-empty">还没有记录设备，可手动添加或下方探测</td>
+                    </tr>
+                    <tr v-for="dev in wolDevices" :key="dev.id">
+                      <td>{{ dev.name }}</td>
+                      <td class="mono">{{ dev.ip || "—" }}</td>
+                      <td class="mono">{{ dev.mac }}</td>
+                      <td class="mono">{{ dev.broadcast && dev.broadcast !== "255.255.255.255" ? dev.broadcast : "自动" }}</td>
+                      <td class="num">
+                        <button class="tool-btn tool-btn-mini" :disabled="wolSending === dev.id" @click="wakeDevice(dev)">
+                          {{ wolSending === dev.id ? "发送中" : "唤醒" }}
+                        </button>
+                        <button class="tool-row-remove" @click="removeWolDevice(dev.id)" title="移除">✕</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="wol-probe-head">
+                <span class="tool-hint">探测网段</span>
+                <input v-model="wolProbeCidr" class="tool-input wol-probe-input" placeholder="192.168.1.0/24" />
+                <button class="tool-btn" :disabled="wolProbing" @click="detectWolDevices">
+                  {{ wolProbing ? "探测中…" : "扫描网段" }}
+                </button>
+              </div>
+
+              <div class="wol-probe-head">
+                <span class="tool-hint">指定 IP</span>
+                <input v-model="wolSingleIp" class="tool-input wol-probe-input" placeholder="知道 IP 时直接探测这一台" @keydown.enter="probeSingleWolIp" />
+                <button class="tool-btn" :disabled="wolSingleProbing" @click="probeSingleWolIp">
+                  {{ wolSingleProbing ? "探测中…" : "探测此 IP" }}
+                </button>
+              </div>
+
+              <div v-if="wolProbeResults.length > 0" class="tool-table-wrap wol-probe-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>IP</th>
+                      <th>名称</th>
+                      <th>MAC</th>
+                      <th>状态</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="item in wolProbeResults" :key="item.ip">
+                      <td class="mono">{{ item.ip }}</td>
+                      <td class="wol-hostname">{{ item.hostname || "—" }}</td>
+                      <td class="mono">{{ item.mac }}</td>
+                      <td :class="item.alive ? 'is-ok' : 'wol-offline'">{{ item.hint }}</td>
+                      <td class="num">
+                        <button class="tool-btn tool-btn-mini" @click="addProbedDevice(item)">添加</button>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div v-if="wolMessage" class="wol-message">{{ wolMessage }}</div>
+            </div>
+
+            <!-- Whois 工具 -->
+            <div v-else-if="win.type === 'whois'" class="tool-body tool-whois">
+              <div class="tool-row">
+                <input
+                  v-model="whoisInput"
+                  class="tool-input"
+                  placeholder="输入域名或 IP，例如 example.com / 8.8.8.8"
+                  @keydown.enter="runWhois"
+                />
+                <button class="tool-btn tool-btn-primary" :disabled="whoisRunning" @click="runWhois">
+                  {{ whoisRunning ? "查询中…" : "查询" }}
+                </button>
+              </div>
+
+              <div v-if="whoisError" class="wol-message is-bad">{{ whoisError }}</div>
+
+              <template v-if="whoisResult">
+                <div class="tool-row tool-whois-bar">
+                  <span class="tool-hint">共 {{ whoisResult.split('\n').length }} 行</span>
+                  <button class="tool-btn tool-btn-mini" @click="copyWhoisResult">
+                    {{ whoisCopied ? "已复制" : "复制全部" }}
+                  </button>
+                </div>
+                <pre class="whois-output">{{ whoisResult }}</pre>
+              </template>
+              <div v-else-if="!whoisRunning && !whoisError" class="tool-empty whois-empty">
+                输入域名或 IP 后回车查询
+              </div>
+            </div>
+
+            <!-- DNS 查询工具 -->
+            <div v-else-if="win.type === 'dnslookup'" class="tool-body tool-dns">
+              <div class="tool-row">
+                <input
+                  v-model="dnsInput"
+                  class="tool-input"
+                  placeholder="输入域名，PTR 查询时可直接填 IP"
+                  @keydown.enter="runDnsLookup"
+                />
+                <ToolSelect v-model="dnsType" :options="dnsTypeOptions" :width="86" />
+                <button class="tool-btn tool-btn-primary" :disabled="dnsRunning" @click="runDnsLookup">
+                  {{ dnsRunning ? "查询中…" : "查询" }}
+                </button>
+              </div>
+
+              <div v-if="dnsError" class="wol-message is-bad">{{ dnsError }}</div>
+
+              <div class="tool-table-wrap tool-dns-wrap">
+                <table class="tool-table">
+                  <thead>
+                    <tr>
+                      <th>名称</th>
+                      <th>类型</th>
+                      <th class="num">TTL</th>
+                      <th>值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-if="dnsRows.length === 0">
+                      <td colspan="4" class="tool-empty">
+                        {{ dnsError ? "—" : "输入域名后回车查询" }}
+                      </td>
+                    </tr>
+                    <tr v-for="(row, idx) in dnsRows" :key="idx">
+                      <td class="mono dns-name">{{ row.name }}</td>
+                      <td class="mono">{{ row.rtype }}</td>
+                      <td class="num mono">{{ row.ttl }}</td>
+                      <td class="mono dns-value" :title="row.value">{{ row.value }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div v-if="dnsElapsed > 0 && !dnsRunning" class="tool-hint dns-elapsed">
+                耗时 {{ dnsElapsed }} ms · {{ dnsQueriedName }}
+              </div>
+            </div>
+
+            <!-- 其余工具：占位（下一批实现） -->
+            <div v-else class="tool-body tool-placeholder">
+              <span>{{ toolWindowTitle(win.type) }} 面板待实现</span>
+            </div>
+          </div>
+        </div>
+
 
         <!-- 左侧拖拽分割调节手柄 -->
         <div class="splitter-handle" @mousedown="onLeftSplitterDown"></div>
@@ -10186,15 +12099,15 @@ onUnmounted(() => {
               <!-- 流量展示行与右上角独立的"统计详情"交互标签 -->
               <div class="traffic-section">
                 <div class="traffic-label">
-                  <span class="traffic-text-main">流量: {{ formatTrafficValue(h.details?.traffic_used, h.details?.traffic_used_unit) }} / {{ h.details?.traffic_total_infinite ? '无限 (∞)' : formatTrafficValue(h.details?.traffic_total, h.details?.traffic_total_unit) }}</span>
+                  <span class="traffic-text-main">流量: {{ formatTrafficValue(h.details?.traffic_used, h.details?.traffic_used_unit, h) }} / {{ h.details?.traffic_total_infinite ? '无限 (∞)' : formatTrafficValue(h.details?.traffic_total, h.details?.traffic_total_unit, h) }}</span>
                   <div class="traffic-label-actions">
                     <button
                       type="button"
-                      :class="['traffic-audit-btn', 'traffic-unit-btn', trafficUnitAuto ? 'is-active' : '']"
-                      @click.stop="toggleTrafficUnitAuto"
-                      :title="trafficUnitAuto ? '当前自动换算单位，点击改为显示原始单位' : '当前显示原始单位，点击改为自动换算'"
+                      :class="['traffic-audit-btn', 'traffic-unit-btn', trafficUnitMode(h) === 'auto' ? 'is-active' : '']"
+                      @click.stop="cycleTrafficUnitMode(h)"
+                      :title="`流量显示单位：${trafficUnitMode(h) === 'auto' ? '自动' : trafficUnitMode(h) === 'raw' ? '原始' : trafficUnitMode(h)}（点击切换）`"
                     >
-                      <span class="audit-icon traffic-unit-icon">⇄</span>
+                      <span class="audit-icon traffic-unit-icon">{{ trafficUnitModeLabel(h) }}</span>
                     </button>
                     <button 
                       type="button" 
