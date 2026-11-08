@@ -6713,7 +6713,7 @@ async function loadConfig() {
             {
               group: "本地",
               hosts: [
-                { name: "OpenWrt", host: "192.168.254.1", port: 2281, user: "root" },
+                { name: "OpenWrt", host: "192.168.1.1", port: 22, user: "root" },
                 { name: "Debian(新城)", host: "192.168.1.2", port: 22, user: "root" },
               ]
             }

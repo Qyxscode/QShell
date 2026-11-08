@@ -58,6 +58,8 @@ App.vue.*_bak
 # AI 交接文档（本地使用，不进仓库）
 ANDROID-HANDOFF.md
 WIN7-LITE-HANDOFF.md
+HANDOFF.md
+HANDOFF-*.md
 
 # 导出的配置备份（含明文密码，绝对不要提交）
 qshell_config.json
