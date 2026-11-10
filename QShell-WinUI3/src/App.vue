@@ -1726,7 +1726,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.3");
+const appVersion = ref("1.0.4");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -2967,7 +2967,9 @@ function handleGlobalClick(e: MouseEvent) {
 
   // 点击非传输气泡及非传输按钮区域时，自动收起传输气泡
   if (showTransferMonitor.value) {
-    if (!target.closest(".transfer-monitor-popover:not(.alert-popover)") && !target.closest(".btn-toggle-transfer")) {
+    // 自动弹出的气泡要放过触发它的那一次点击，否则「弹出来立刻被收起」
+    const justOpened = Date.now() - transferPopoverOpenedAt < 300;
+    if (!justOpened && !target.closest(".transfer-monitor-popover:not(.alert-popover)") && !target.closest(".btn-toggle-transfer")) {
       showTransferMonitor.value = false;
     }
   }
@@ -8645,8 +8647,13 @@ async function resolveSessionRemoteDir(tab: SessionTab): Promise<string> {
   }
 }
 
+// 自动弹出气泡的时间戳：触发弹出的那一次点击还会冒泡到 handleGlobalClick，
+// 那里会把「点在气泡外」当成关闭信号，导致气泡弹出来立刻消失。记录时间后让那次点击放过它。
+let transferPopoverOpenedAt = 0;
+
 function revealTransferMonitor() {
   showTransferMonitor.value = true;
+  transferPopoverOpenedAt = Date.now();
   nextTick(() => {
     const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
     const offset = computeArrowOffset(btn, transferPopoverEl.value);
@@ -8880,12 +8887,7 @@ async function uploadLocalPath(localPath: string) {
 
   const taskId = makeTaskId("up");
 
-  showTransferMonitor.value = true;
-  nextTick(() => {
-    const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
-    const offset = computeArrowOffset(btn, transferPopoverEl.value);
-    if (offset !== null) transferPopoverTargetRight.value = offset;
-  });
+  revealTransferMonitor();
   activeTransfers.value.push({
     task_id: taskId,
     filename: fname,
@@ -9247,12 +9249,7 @@ async function sftpTriggerDownload(item: SftpFileItem): Promise<boolean> {
   const taskId = makeTaskId("down");
   const sessionId = activeSessionId.value;
 
-  showTransferMonitor.value = true;
-  nextTick(() => {
-    const btn = document.querySelector(".btn-toggle-transfer") as HTMLElement | null;
-    const offset = computeArrowOffset(btn, transferPopoverEl.value);
-    if (offset !== null) transferPopoverTargetRight.value = offset;
-  });
+  revealTransferMonitor();
   activeTransfers.value.push({
     task_id: taskId,
     filename: item.name,
@@ -9560,7 +9557,13 @@ async function sftpDeleteItemsConfirmed(targets: SftpFileItem[]) {
 function sendMemoCommand(cmd: string) {
   const cur = sessions.value.find(s => s.id === activeSessionId.value);
   if (cur && cur.alive) {
-    invoke("write_ssh_session", { sessionId: cur.id, data: cmd + "\n" });
+    // 只读模式禁止向远端写入任何内容，与粘贴/键盘输入保持一致
+    if (cur.read_only) return;
+    // 和「只填充」走同一条写入通道，Telnet / 串口 / 本地终端也要能执行
+    const writeCommand = isGenericProtocol(cur.host?.protocol) ? "write_generic_session" : "write_ssh_session";
+    invoke(writeCommand, { sessionId: cur.id, data: cmd + "\n" });
+    // 执行完把焦点交回终端：不然还得再点一下终端才能继续敲命令
+    nextTick(() => cur.termInstance?.focus());
   } else {
     navigator.clipboard.writeText(cmd);
   }
