@@ -2532,6 +2532,51 @@ html.window-resizing .workspace-layout {
   color: var(--text-sub);
 }
 
+/* SFTP 读取失败：给一条自救路径，不必重连整个终端 */
+.sftp-error {
+  padding: 28px 14px;
+}
+
+.sftp-error-text {
+  display: block;
+  color: #EF4444;
+  font-size: 11.5px;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.sftp-retry-btn {
+  margin-top: 12px;
+  padding: 5px 18px;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--bg-sub-card);
+  color: var(--text-main);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.sftp-retry-btn:hover:not(:disabled) {
+  background: var(--bg-capsule-hover);
+  border-color: var(--color-primary);
+}
+
+.sftp-retry-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.sftp-error-hint {
+  display: block;
+  margin-top: 10px;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--text-sub);
+  opacity: 0.8;
+}
+
 .sftp-empty-title {
   display: block;
   font-size: 12px;
@@ -2992,8 +3037,26 @@ html.window-resizing .workspace-layout {
   filter: grayscale(40%);
 }
 
-.popover-close { cursor: pointer; color: var(--text-sub); }
-.popover-close:hover { color: var(--text-main); }
+/* 弹窗右上角的关闭按钮：与工具窗口保持同一套方块高亮反馈，
+   不再只是把「✕」本身变亮 */
+.popover-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-sub);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.popover-close:hover {
+  background: var(--bg-capsule-hover);
+  color: var(--text-title);
+}
 
 .transfer-task-list {
   max-height: 260px;
@@ -4293,8 +4356,24 @@ html.window-resizing .workspace-layout {
 }
 
 .modal-title { font-size: 13px; font-weight: 600; color: var(--text-title); }
-.modal-close { font-size: 14px; color: var(--text-sub); cursor: pointer; padding: 4px; transition: color 0.15s; }
-.modal-close:hover { color: var(--text-main); }
+/* 与工具窗口的关闭按钮统一：悬停时整块高亮，而不是只有 ✕ 变色 */
+.modal-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  color: var(--text-sub);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+.modal-close:hover {
+  background: var(--bg-capsule-hover);
+  color: var(--text-title);
+}
 
 .modal-body {
   padding: 16px;
@@ -6755,6 +6834,35 @@ body,
 .history-count {
   font-size: 11px;
   color: var(--text-sub);
+}
+
+/* 轻量操作回执：浮在窗口底部居中，不挤占任何面板布局 */
+.app-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  padding: 7px 16px;
+  border-radius: 6px;
+  background: var(--bg-modal);
+  border: 1px solid var(--border-card);
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 99999;
+}
+
+.toast-fade-enter-active,
+.toast-fade-leave-active {
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.toast-fade-enter-from,
+.toast-fade-leave-to {
+  opacity: 0;
+  transform: translateX(-50%) translateY(6px);
 }
 
 .history-empty {

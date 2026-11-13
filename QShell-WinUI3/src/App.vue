@@ -1726,7 +1726,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.4");
+const appVersion = ref("1.0.5");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -7428,10 +7428,13 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
         isSftpDragOver.value = false;
       }
 
-      // 后端会把断开原因带出来（远端结束 / 读取失败等），显示出来便于判断责任方
+      // 后端会把断开原因带出来（远端结束 / 读取失败等），显示出来便于判断责任方。
+      // 两种情况都要给出「按回车重连」的提示：重启主机这类断开拿到的是「读取失败」，
+      // 如果只在正常结束时提示，用户就不知道该按什么恢复。
       const reason = typeof event?.payload === "string" ? event.payload.trim() : "";
       if (reason && reason !== "远端结束了会话") {
         term.writeln(`\r\n\x1b[33m[终端连接已断开：${reason}]\x1b[0m`);
+        term.writeln("\x1b[33m[按回车键重新连接...]\x1b[0m\r\n");
       } else {
         term.writeln("\r\n\x1b[33m[终端连接已断开。按回车键重新连接...]\x1b[0m\r\n");
       }
@@ -8114,7 +8117,33 @@ function sendHistoryCommand(cmd: string) {
   });
 }
 
+// 左键点击历史条目只复制，不发送——发送执行已经在右键菜单里，避免误点直接跑命令
+let historyCopyTipTimer: number | null = null;
+const historyCopyTip = ref("");
+
+function copyHistoryCommandInline(cmd: string) {
+  if (!cmd) return;
+  void writeClipboardText(cmd);
+  historyCopyTip.value = "已复制当前历史命令";
+  if (historyCopyTipTimer !== null) window.clearTimeout(historyCopyTipTimer);
+  historyCopyTipTimer = window.setTimeout(() => {
+    historyCopyTip.value = "";
+    historyCopyTipTimer = null;
+  }, 1600);
+}
+
 const historyFilter = ref<"all" | "current">("all");
+// 用户手动切过筛选后就不再自动跳转，尊重他的选择
+const historyFilterTouched = ref(false);
+
+// 一旦有可用的 SSH 会话，历史默认看当前主机，而不是把所有主机的命令混在一起
+watch(
+  () => activeSession.value?.alive,
+  (alive) => {
+    if (alive && !historyFilterTouched.value) historyFilter.value = "current";
+  },
+  { immediate: true },
+);
 
 const filteredHistory = computed(() => {
   if (historyFilter.value !== "current") return commandHistory.value;
@@ -8291,6 +8320,19 @@ async function fetchSftpFiles(path: string, expectedSessionId = activeSessionId.
       isSftpLoading.value = false;
     }
   }
+}
+
+// 手动重试：丢弃后端缓存的 SFTP 通道后重新建连再读一次目录。
+// 空闲久了通道会被中间设备回收，此时句柄还在但发不出包，只能重建。
+async function retrySftpChannel() {
+  const sessionId = activeSessionId.value;
+  if (!sessionId) return;
+  try {
+    await invoke("reset_sftp_channel", { sessionId });
+  } catch (_) {
+    // 重建失败就交给随后的读取报错，不用单独提示
+  }
+  await fetchSftpFiles(currentSftpPath.value || "/", sessionId);
 }
 
 // SFTP 跟随当前活动 SSH 会话：会话切换、从连接中变为在线、重连成功后
@@ -11807,8 +11849,8 @@ onUnmounted(() => {
           <div v-if="rightPanelTab === 'history'" class="history-container">
             <div class="history-toolbar">
               <div class="history-filter-group">
-                <button :class="['history-filter-btn', historyFilter === 'all' ? 'active' : '']" @click="historyFilter = 'all'">全部</button>
-                <button :class="['history-filter-btn', historyFilter === 'current' ? 'active' : '']" @click="historyFilter = 'current'">当前主机</button>
+                <button :class="['history-filter-btn', historyFilter === 'all' ? 'active' : '']" @click="historyFilter = 'all'; historyFilterTouched = true">全部</button>
+                <button :class="['history-filter-btn', historyFilter === 'current' ? 'active' : '']" @click="historyFilter = 'current'; historyFilterTouched = true">当前主机</button>
               </div>
               <span class="history-count">共 {{ filteredHistory.length }} 条</span>
               <button class="btn-sftp-action" :disabled="commandHistory.length === 0" @click="clearCommandHistory">清空</button>
@@ -11821,8 +11863,8 @@ onUnmounted(() => {
                 v-for="(item, idx) in filteredHistory"
                 :key="idx"
                 class="history-item"
-                :title="'点击发送：' + item.cmd"
-                @click="sendHistoryCommand(item.cmd)"
+                :title="'点击复制：' + item.cmd"
+                @click="copyHistoryCommandInline(item.cmd)"
                 @contextmenu.prevent="openHistoryContextMenu($event, item, idx)"
               >
                 <span class="history-cmd">{{ item.cmd }}</span>
@@ -11897,8 +11939,12 @@ onUnmounted(() => {
                 </span>
               </div>
               <div v-else-if="isSftpLoading && sftpFiles.length === 0" class="sftp-loading">读取目录中...</div>
-              <div v-else-if="sftpErrorMsg" class="sftp-empty" style="color: #EF4444;">
-                {{ sftpErrorMsg }}
+              <div v-else-if="sftpErrorMsg" class="sftp-empty sftp-error">
+                <span class="sftp-error-text">{{ sftpErrorMsg }}</span>
+                <button class="sftp-retry-btn" :disabled="isSftpLoading" @click="retrySftpChannel">
+                  {{ isSftpLoading ? "重连中…" : "重试" }}
+                </button>
+                <span class="sftp-error-hint">空闲过久连接可能已被中断，重试会重建 SFTP 通道（不影响终端会话）</span>
               </div>
               <div v-else-if="sftpFiles.length === 0" class="sftp-empty">
                 {{ activeSessionId && activeSession?.alive ? '目录为空或无权限' : '请先在左侧双击连接主机' }}
@@ -14082,6 +14128,11 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+    </Transition>
+
+    <!-- 轻量操作回执：浮在窗口底部居中，不占面板布局，避免被工具栏按钮挤掉 -->
+    <Transition name="toast-fade">
+      <div v-if="historyCopyTip" class="app-toast">{{ historyCopyTip }}</div>
     </Transition>
 
   </div>

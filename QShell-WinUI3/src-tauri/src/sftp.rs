@@ -36,6 +36,22 @@ pub fn cancel_sftp_transfer(task_id: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 丢弃缓存的 SFTP 通道，下次操作会重新建连。
+///
+/// SFTP 用的是独立于终端的长连接，空闲久了会被中间设备回收，
+/// 此时本地句柄还在但包已经发不出去（Unable to send FXP_OPEN）。
+/// 由用户点「重试」触发重建，不打断正在用的终端会话。
+#[tauri::command]
+pub fn reset_sftp_channel(
+    state: tauri::State<'_, SshManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let guard = state.sessions.lock();
+    let act = guard.get(&session_id).ok_or("SSH 会话未连接")?;
+    *act.sftp.lock() = None;
+    Ok(())
+}
+
 fn open_sftp_handle(params: &SshConnectParams) -> Result<SftpHandle, String> {
     let addrs = (params.host.as_str(), params.port)
         .to_socket_addrs()
