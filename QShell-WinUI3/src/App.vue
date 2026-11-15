@@ -1726,7 +1726,7 @@ function isGenericProtocol(protocol?: string): boolean {
 }
 const appWindow = isTauri ? getCurrentWindow() : null;
 // 版本号从 tauri.conf.json 读取，避免每次升级都要改前端硬编码。
-const appVersion = ref("1.0.5");
+const appVersion = ref("1.0.6");
 if (isTauri) {
   getVersion()
     .then((version) => { appVersion.value = version; })
@@ -2973,6 +2973,32 @@ function handleGlobalClick(e: MouseEvent) {
       showTransferMonitor.value = false;
     }
   }
+}
+
+/** 窗口重新获得焦点、或点了界面空白处时，把光标送回终端。
+    分屏状态下不处理：让用户自己点选要操作的那一屏。 */
+function focusActiveTerminalIfIdle() {
+  if (paneLayout.value !== 1) return;
+  const tab = activeSession.value;
+  if (!tab?.alive || !tab.termInstance) return;
+  // 有弹窗、或焦点已经在可编辑控件里，不要抢
+  if (document.querySelector(".modal-overlay")) return;
+  const ae = document.activeElement as HTMLElement | null;
+  if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
+  tab.termInstance.focus();
+}
+
+function handleWindowFocusRefocus() {
+  // 等一帧，避免和 WebView2 自身的焦点恢复抢
+  window.setTimeout(focusActiveTerminalIfIdle, 0);
+}
+
+function handleAppBlankMousedown(e: MouseEvent) {
+  const target = e.target as HTMLElement | null;
+  if (!target) return;
+  // 点在可交互控件或弹窗上，交给它们自己处理
+  if (target.closest("input, textarea, select, button, a, [contenteditable='true'], .modal-overlay, .context-menu, .tool-window, .toolbox-panel")) return;
+  focusActiveTerminalIfIdle();
 }
 
 function clearAllAlerts() {
@@ -7361,7 +7387,12 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     return true;
   });
 
-  term.writeln(`\x1b[36m[QShell]\x1b[0m 正在连接到 ${h.name} (${h.host}:${h.port})...`);
+  if (h.protocol === "local") {
+    // 本地终端不该显示成「连接到 127.0.0.1:22」，那是误导
+    term.writeln(`\x1b[36m[QShell]\x1b[0m 正在启动本地终端（${h.local_shell === "cmd" ? "CMD" : "PowerShell"}）...`);
+  } else {
+    term.writeln(`\x1b[36m[QShell]\x1b[0m 正在连接到 ${h.name} (${h.host}:${h.port})...`);
+  }
 
   if (isTauri) {
     // 终端输入监听：1:1 对标 ssh8.py send_to_ssh
@@ -7631,7 +7662,11 @@ async function doStartSsh(tab: SessionTab) {
     }
     // 建立文件会话：auto = SSH 用 SFTP、非 SSH 尝试 FTP；none 不启用
     let fileProto: "none" | "sftp" | "ftp" = "none";
-    if (h.file_protocol === "none") {
+    if (h.protocol === "local" || h.protocol === "serial") {
+      // 本地终端 / 串口没有文件传输这回事，任何配置都不该去连 FTP，
+      // 否则会在本地凭空连 127.0.0.1:21 并报「目标计算机积极拒绝」
+      fileProto = "none";
+    } else if (h.file_protocol === "none") {
       fileProto = "none";
     } else if (h.file_protocol === "sftp") {
       fileProto = h.protocol === "ssh" ? "sftp" : "none";
@@ -10198,6 +10233,9 @@ onMounted(async () => {
   startTrafficAuditScheduler();
   window.addEventListener("focus", handleTrafficSchedulerWake);
   document.addEventListener("visibilitychange", handleTrafficSchedulerWake);
+  // 切回来 / 点空白处就把光标送回终端，省得每次都要先点一下终端
+  window.addEventListener("focus", handleWindowFocusRefocus);
+  window.addEventListener("mousedown", handleAppBlankMousedown, true);
   window.addEventListener("click", handleBaudOutsideClick);
   window.addEventListener("qshell-close-selects", handleCloseSelects);
   window.addEventListener("click", handleGlobalClick);
@@ -10270,14 +10308,16 @@ onMounted(async () => {
     unlistenCloseRequested = await appWindow.onCloseRequested(async (event) => {
       event.preventDefault();
       if (terminalSettings.value.minimize_to_tray) {
-        try {
-          await invoke("notify_tray", {
-            body: "QShell 已隐藏到系统托盘，点击托盘图标可重新打开。",
-          });
-        } catch (notifyError) {
-          console.warn("[tray] 发送系统通知失败:", notifyError);
-        }
+        // 先把窗口藏起来，让 WebView2 的 GPU 合成器安静退场，再发通知。
+        // 之前是先 await 通知（WinRT/COM 几百毫秒）再 hide，两次 GPU 状态切换
+        // 挨得太近，在 Intel P630 这类老驱动上会记一次 GPU watchdog 超时，表现为卡顿。
+        // 通知本身改成 fire-and-forget，失败只打日志，不再阻塞关闭流程。
         await appWindow?.hide();
+        void invoke("notify_tray", {
+          body: "QShell 已隐藏到系统托盘，点击托盘图标可重新打开。",
+        }).catch((notifyError) => {
+          console.warn("[tray] 发送系统通知失败:", notifyError);
+        });
       } else {
         // 退出前保存会话快照，下次启动可恢复
         try {
@@ -10322,6 +10362,8 @@ onUnmounted(() => {
   window.removeEventListener("keydown", handleFullscreenKey);
   window.removeEventListener("focus", handleTrafficSchedulerWake);
   document.removeEventListener("visibilitychange", handleTrafficSchedulerWake);
+  window.removeEventListener("focus", handleWindowFocusRefocus);
+  window.removeEventListener("mousedown", handleAppBlankMousedown, true);
   if (unlistenCloseRequested) unlistenCloseRequested();
   stopTrafficAuditScheduler();
   if (unlistenTransfer) unlistenTransfer();
