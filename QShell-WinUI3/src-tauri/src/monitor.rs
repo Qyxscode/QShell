@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 use std::io::Read;
-use std::net::ToSocketAddrs;
 use std::sync::Mutex;
 use std::collections::HashMap;
 use crate::ssh::SshManager;
@@ -24,6 +23,8 @@ struct SessionMetricCache {
     last_cpu: u32,
     last_mem: u32,
     last_disk: u32,
+    /// 上次采到的有效主频，偶发读不到时沿用它，避免界面闪烁
+    last_freq_mhz: u32,
 }
 
 static SESSION_METRIC_CACHE: Mutex<Option<HashMap<String, SessionMetricCache>>> = Mutex::new(None);
@@ -53,6 +54,10 @@ pub struct RemoteSystemMetrics {
     pub net_if_options: Vec<String>,
     pub cpu_model: Option<String>,
     pub cpu_cores: u32,
+    /// 实时主频（MHz），0 表示没采到
+    pub cpu_freq_mhz: u32,
+    /// 是否运行在虚拟机里（读不到主频时界面显示 Virtual）
+    pub is_vm: bool,
     pub mem_total_bytes: u64,
     pub mem_used_bytes: u64,
     pub disk_total_bytes: u64,
@@ -75,7 +80,7 @@ pub async fn fetch_system_metrics(
     tokio::task::spawn_blocking(move || {
         let handle = crate::sftp::ensure_sftp_handle(&monitor_slot, &params)?;
         let session_arc = handle.session.clone();
-        let cmd = "cat /etc/openwrt_release 2>/dev/null; grep '^cpu ' /proc/stat 2>/dev/null; cat /proc/meminfo 2>/dev/null || LANG=C free -m 2>/dev/null; df -m / 2>/dev/null | awk 'NR>1 {for(i=1;i<=NF;i++) if($i ~ /%$/) print $i}' || df -m 2>/dev/null; echo \"Cores: $(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null)\"; grep -m1 -E 'model name|Hardware|Processor' /proc/cpuinfo 2>/dev/null; echo \"DF: $(df -Pk / 2>/dev/null | awk 'NR==2 {print $2, $3, $4}')\"; ip route show default 2>/dev/null; cat /proc/net/dev 2>/dev/null";
+        let cmd = "cat /etc/openwrt_release 2>/dev/null; grep '^cpu ' /proc/stat 2>/dev/null; cat /proc/meminfo 2>/dev/null || LANG=C free -m 2>/dev/null; df -m / 2>/dev/null | awk 'NR>1 {for(i=1;i<=NF;i++) if($i ~ /%$/) print $i}' || df -m 2>/dev/null; echo \"Cores: $(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null)\"; grep -m1 -E 'model name|Hardware|Processor' /proc/cpuinfo 2>/dev/null; echo \"FREQ: $(cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq 2>/dev/null | awk '$1>100000 {s+=$1; n++} END {if(n>0) printf \"%d\", s/n/1000}')\"; echo \"MSR_RAW: $(rdmsr -a 0x198 2>/dev/null | awk 'NR==1{print $1}')\"; echo \"FREQ_MHZ: $(awk -F: '/cpu MHz/ && $2>100 {s+=$2; n++} END {if(n>0) printf \"%d\", s/n}' /proc/cpuinfo 2>/dev/null)\"; echo \"VIRT: $(systemd-detect-virt 2>/dev/null || (grep -qm1 hypervisor /proc/cpuinfo 2>/dev/null && echo kvm) || echo none)\"; echo \"DF: $(df -Pk / 2>/dev/null | awk 'NR==2 {print $2, $3, $4}')\"; ip route show default 2>/dev/null; cat /proc/net/dev 2>/dev/null";
         
         let mut output = String::new();
         let start_time = std::time::Instant::now();
@@ -129,57 +134,29 @@ pub async fn fetch_system_metrics(
             break;
         }
 
-        // 如果主会话因 Shell 独占阻塞，回退启动独立轻量轻击线程连接（1:1 对标 paramiko client 行为）
+        // 如果主会话因 Shell 独占阻塞，回退另建一条连接兜底。
+        // 必须走 open_session：跳板机模式下自己直连 params.host 会绕过跳板机，
+        // 撞上本机网络里同名的内网地址就会采到别的设备（表现为监控数据对不上机器）。
         if !executed || output.trim().is_empty() {
-            // 不能用 "host:port".parse::<SocketAddr>()：那只接受 IP 字面量，
-            // 域名/IPv6 会解析失败并静默回退到 127.0.0.1:22（等于用远端凭据认证本机）。
-            let aux_tcp = (params.host.as_str(), params.port)
-                .to_socket_addrs()
-                .map(|addrs| {
-                    addrs
-                        .filter_map(|addr| {
-                            std::net::TcpStream::connect_timeout(
-                                &addr,
-                                std::time::Duration::from_millis(800),
-                            )
-                            .ok()
-                        })
-                        .next()
-                })
-                .unwrap_or(None);
-            if let Some(tcp) = aux_tcp {
-                let _ = tcp.set_nodelay(true);
-                if let Ok(mut aux_sess) = ssh2::Session::new() {
-                    aux_sess.set_tcp_stream(tcp);
-                    // 建连超时只覆盖 TCP；不设会话超时会让握手/读取永久阻塞，
-                    // 配合前端每 3 秒一次的轮询会逐步耗尽 blocking 线程池。
-                    aux_sess.set_timeout(8_000);
-                    if aux_sess.handshake().is_ok() {
-                        if let Some(ref key_path) = params.private_key {
-                            if !key_path.trim().is_empty() {
-                                let p = std::path::Path::new(key_path);
-                                if p.is_file() {
-                                    let _ = aux_sess.userauth_pubkey_file(&params.username, None, p, params.passphrase.as_deref());
+            if let Ok(mut aux_sess) = crate::ssh::open_session(&params) {
+                if let Ok(mut ch) = aux_sess.channel_session() {
+                    let _ = ch.setenv("LANG", "C");
+                    if ch.exec(cmd).is_ok() {
+                        let mut buf = [0u8; 4096];
+                        loop {
+                            match ch.read(&mut buf) {
+                                Ok(0) => break,
+                                Ok(n) => {
+                                    output.push_str(&String::from_utf8_lossy(&buf[..n]));
                                 }
-                            }
-                        }
-                        if !aux_sess.authenticated() {
-                            if let Some(ref pwd) = params.password {
-                                let _ = aux_sess.userauth_password(&params.username, pwd);
-                            }
-                        }
-                        if aux_sess.authenticated() {
-                            if let Ok(mut ch) = aux_sess.channel_session() {
-                                if ch.exec(cmd).is_ok() {
-                                    let mut buf = [0u8; 4096];
-                                    while let Ok(n) = ch.read(&mut buf) {
-                                        if n == 0 { break; }
-                                        output.push_str(&String::from_utf8_lossy(&buf[..n]));
-                                    }
-                                    let _ = ch.wait_close();
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    std::thread::sleep(std::time::Duration::from_millis(10));
+                                    continue;
                                 }
+                                Err(_) => break,
                             }
                         }
+                        let _ = ch.wait_close();
                     }
                 }
             }
@@ -207,6 +184,9 @@ pub async fn fetch_system_metrics(
         let mut default_if_name = String::new();
         let mut cpu_model: Option<String> = None;
         let mut cpu_cores = 0u32;
+        let mut cpu_freq_mhz = 0u32;
+        let mut is_vm = false;
+        let mut cpuinfo_mhz = 0u32;
         let mut mem_total_bytes = 0u64;
         let mut mem_used_bytes = 0u64;
         let mut disk_total_bytes = 0u64;
@@ -219,7 +199,49 @@ pub async fn fetch_system_metrics(
                     .split_once(':')
                     .and_then(|(_, v)| v.trim().parse().ok())
                     .unwrap_or(0);
-            } else if trimmed.starts_with("DF:") {
+            } else if trimmed.starts_with("FREQ:") {
+                // scaling_cur_freq 单位 kHz
+                if let Some((_, v)) = trimmed.split_once(':') {
+                    if let Ok(khz) = v.trim().parse::<u64>() {
+                        // 物理 CPU 不会低于 100MHz；偶发读到 0/1 时直接丢弃，避免界面跳变
+                        if khz >= 100_000 {
+                            cpu_freq_mhz = (khz / 1000) as u32;
+                        }
+                    }
+                }
+            } else if trimmed.starts_with("MSR_RAW:") {
+                // 虚拟机里没有 cpufreq，只能读 IA32_PERF_STATUS(0x198)：
+                // bit15:8 是当前倍频，乘基频(通常 100MHz)得到实时频率。
+                // rdmsr 需要 msr-tools + root；读不到就交给前端显示 Virtual / N/A。
+                if cpu_freq_mhz == 0 {
+                    if let Some((_, v)) = trimmed.split_once(':') {
+                        let hex = v.trim();
+                        if !hex.is_empty() {
+                            if let Ok(raw) = u64::from_str_radix(hex, 16) {
+                                let ratio = (raw >> 8) & 0xFF;
+                                // 倍频合理范围过滤，避免异常读数
+                                if ratio >= 4 && ratio <= 200 {
+                                    cpu_freq_mhz = (ratio as u32) * 100;
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if trimmed.starts_with("VIRT:") {
+                if let Some((_, v)) = trimmed.split_once(':') {
+                    let val = v.trim();
+                    is_vm = !val.is_empty() && val != "none";
+                }
+            } else if trimmed.starts_with("FREQ_MHZ:") {
+                // 物理机这里是真的动态值；虚拟机是固定假值，所以只记录、最后再决定用不用
+                if let Some((_, v)) = trimmed.split_once(':') {
+                    if let Ok(mhz) = v.trim().parse::<f64>() {
+                        if mhz >= 100.0 {
+                            cpuinfo_mhz = mhz.round() as u32;
+                        }
+                    }
+                }
+            } else if trimmed.starts_with("DF:") {            } else if trimmed.starts_with("DF:") {
                 let values: Vec<u64> = trimmed[3..]
                     .split_whitespace()
                     .filter_map(|v| v.parse().ok())
@@ -524,6 +546,18 @@ pub async fn fetch_system_metrics(
         let net_up_str = format_speed(speed_tx);
         let net_down_str = format_speed(speed_rx);
 
+        // cpufreq 和 MSR 都没拿到时：物理机用 cpuinfo 兜底（虚拟机的是假值，不用）
+        if cpu_freq_mhz == 0 && !is_vm && cpuinfo_mhz > 0 {
+            cpu_freq_mhz = cpuinfo_mhz;
+        }
+
+        // 这次没采到有效主频就沿用上次的，避免胶囊忽隐忽现
+        if cpu_freq_mhz > 0 {
+            cache.last_freq_mhz = cpu_freq_mhz;
+        } else {
+            cpu_freq_mhz = cache.last_freq_mhz;
+        }
+
         Ok(RemoteSystemMetrics {
             cpu,
             mem,
@@ -534,6 +568,8 @@ pub async fn fetch_system_metrics(
             net_if_options,
             cpu_model,
             cpu_cores,
+            cpu_freq_mhz,
+            is_vm,
             mem_total_bytes,
             mem_used_bytes,
             disk_total_bytes,
@@ -558,4 +594,17 @@ fn format_speed(bps: f64) -> String {
 
 fn max_bounded(v: u32) -> u32 {
     if v > 100 { 100 } else { v }
+}
+
+/// cpuinfo 里的型号常带 " @ 2.40GHz"，和实时主频一起显示会看混，这里去掉。
+/// 只砍末尾的 "@ xxxGHz" 段，前面的型号名原样保留。
+fn clean_cpu_model(raw: &str) -> String {
+    let s = raw.trim();
+    if let Some(pos) = s.rfind(" @ ") {
+        let head = s[..pos].trim();
+        if !head.is_empty() {
+            return head.to_string();
+        }
+    }
+    s.to_string()
 }

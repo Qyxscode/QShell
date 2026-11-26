@@ -22,6 +22,7 @@ import { fuzzyMatchIndices } from "./utils/fuzzy";
 import { stripAnsiForCheck } from "./utils/ansi";
 import {
   formatMetricBytes,
+  formatCpuFreq,
   formatHistoryTime,
   formatSessionEventTime,
   formatSpeed,
@@ -2312,6 +2313,8 @@ const monitorStats = ref({
   latency: 0,
   cpu_model: "",
   cpu_cores: 0,
+  cpu_freq_mhz: 0,
+  is_vm: false,
   mem_total_bytes: 0,
   mem_used_bytes: 0,
   disk_total_bytes: 0,
@@ -2669,6 +2672,8 @@ function resetMonitorStats() {
     latency: 0,
     cpu_model: "",
     cpu_cores: 0,
+    cpu_freq_mhz: 0,
+  is_vm: false,
     mem_total_bytes: 0,
     mem_used_bytes: 0,
     disk_total_bytes: 0,
@@ -7875,6 +7880,8 @@ function startMonitoringLoop(sid: string) {
         net_if_options?: string[];
         cpu_model?: string;
         cpu_cores?: number;
+        cpu_freq_mhz?: number;
+        is_vm?: boolean;
         mem_total_bytes?: number;
         mem_used_bytes?: number;
         disk_total_bytes?: number;
@@ -7898,6 +7905,8 @@ function startMonitoringLoop(sid: string) {
           latency: monitorStats.value.latency,
           cpu_model: stats.cpu_model || "",
           cpu_cores: stats.cpu_cores || 0,
+          cpu_freq_mhz: stats.cpu_freq_mhz || 0,
+          is_vm: !!stats.is_vm,
           mem_total_bytes: stats.mem_total_bytes || 0,
           mem_used_bytes: stats.mem_used_bytes || 0,
           disk_total_bytes: stats.disk_total_bytes || 0,
@@ -7945,6 +7954,8 @@ function switchSession(sid: string) {
         latency: cachedLatency,
         cpu_model: "",
         cpu_cores: 0,
+        cpu_freq_mhz: 0,
+  is_vm: false,
         mem_total_bytes: 0,
         mem_used_bytes: 0,
         disk_total_bytes: 0,
@@ -10535,6 +10546,9 @@ onUnmounted(() => {
               <div class="gauge-item">
                 <div class="gauge-label">
                   <span class="g-name">CPU 使用率</span>
+                  <span v-if="monitorStats.cpu_freq_mhz" class="metric-chip freq-chip">{{ formatCpuFreq(monitorStats.cpu_freq_mhz) }}</span>
+                  <span v-else-if="monitorStats.is_vm" class="metric-chip freq-chip freq-chip-vm">Virtual</span>
+                  <span v-else class="metric-chip freq-chip freq-chip-na">N/A</span>
                   <span class="g-val">{{ monitorStats.cpu }}%</span>
                 </div>
                 <div class="gauge-track">

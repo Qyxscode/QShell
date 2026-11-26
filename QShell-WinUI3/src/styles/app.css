@@ -783,12 +783,50 @@ html.window-resizing .workspace-layout {
 .gauge-label {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-main);
   font-weight: 500;
 }
 
+/* 数值始终贴右边，中间的主频胶囊紧跟在标题后面 */
+.gauge-label .g-val {
+  margin-left: auto;
+}
+
+
+/* CPU 实时主频胶囊：和核心数同款，天蓝色区分开。
+   用双类名提高优先级，避免被后面的 .metric-chip 基础色覆盖。 */
+.metric-chip.freq-chip {
+  color: #22D3EE;
+  border-color: rgba(34, 211, 238, 0.45);
+  background: rgba(34, 211, 238, 0.14);
+}
+
+[data-theme="light"] .metric-chip.freq-chip {
+  color: #0E7490;
+  border-color: rgba(14, 116, 144, 0.35);
+  background: rgba(34, 211, 238, 0.18);
+}
+
+/* 虚拟机读不到真实频率时，胶囊里显示 Virtual，配色比真实频率淡一档 */
+.metric-chip.freq-chip-vm {
+  color: #9AA6B2;
+  border-color: rgba(154, 166, 178, 0.4);
+  background: rgba(154, 166, 178, 0.12);
+}
+
+[data-theme="light"] .metric-chip.freq-chip-vm {
+  color: #5B6470;
+  border-color: rgba(91, 100, 112, 0.35);
+  background: rgba(91, 100, 112, 0.1);
+}
+/* 物理机但确实读不到主频：显示 N/A，颜色更淡 */
+.metric-chip.freq-chip-na {
+  color: #7A7A82;
+  border-color: rgba(122, 122, 130, 0.3);
+  background: transparent;
+}
 .gauge-track {
   position: relative;
   height: 6px;

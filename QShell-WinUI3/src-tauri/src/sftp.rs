@@ -2,10 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::fs::File;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::{Mutex as StdMutex, OnceLock};
 use std::collections::HashSet;
-use std::time::Duration;
 use tauri::Emitter;
 use crate::ssh::{SftpHandle, SshConnectParams, SshManager};
 
@@ -53,60 +51,13 @@ pub fn reset_sftp_channel(
 }
 
 fn open_sftp_handle(params: &SshConnectParams) -> Result<SftpHandle, String> {
-    let addrs = (params.host.as_str(), params.port)
-        .to_socket_addrs()
-        .map_err(|e| format!("操作失败: {}", e))?;
-
-    let mut tcp = None;
-    let mut last_error = String::new();
-    for addr in addrs {
-        match TcpStream::connect_timeout(&addr, Duration::from_secs(8)) {
-            Ok(stream) => {
-                tcp = Some(stream);
-                break;
-            }
-            Err(e) => last_error = e.to_string(),
-        }
-    }
-    let tcp = tcp.ok_or_else(|| format!("操作失败: {}", last_error))?;
-    let _ = tcp.set_nodelay(true);
-
-    let mut sess = ssh2::Session::new().map_err(|e| format!("初始化 SFTP 会话失败: {}", e))?;
-    sess.set_tcp_stream(tcp);
-    sess.set_timeout(12_000);
-    let _ = sess.method_pref(
-        ssh2::MethodType::Kex,
-        "ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1",
-    );
-    let _ = sess.method_pref(
-        ssh2::MethodType::HostKey,
-        "rsa-sha2-512,rsa-sha2-256,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,ssh-rsa",
-    );
-    sess.handshake().map_err(|e| format!("SFTP 握手失败: {}", e))?;
-    let _ = sess.set_keepalive(true, 30);
-
-    let mut authenticated = false;
-    if let Some(ref key_path) = params.private_key {
-        if !key_path.trim().is_empty() {
-            let p = Path::new(key_path);
-            if p.is_file() {
-                authenticated = sess
-                    .userauth_pubkey_file(&params.username, None, p, params.passphrase.as_deref())
-                    .is_ok()
-                    && sess.authenticated();
-            }
-        }
-    }
-    if !authenticated {
-        if let Some(ref pwd) = params.password {
-            let _ = sess.userauth_password(&params.username, pwd);
-        }
-    }
-    if !sess.authenticated() {
-        return Err("SFTP 认证失败，请检查用户名、密码或私钥".to_string());
-    }
-
-    let sftp = sess.sftp().map_err(|e| format!("创建 SFTP 通道失败: {}", e))?;
+    // 统一走 ssh 模块的建连逻辑：跳板机、认证、算法偏好全在那里处理。
+    // 这里若自己直连 params.host，跳板机模式会绕过跳板机，
+    // 撞上本机网络里同名的内网地址就会连到别的设备（监控数据显示成别的机器）。
+    let mut sess = crate::ssh::open_session(params)?;
+    let sftp = sess
+        .sftp()
+        .map_err(|e| format!("创建 SFTP 通道失败: {}", e))?;
     Ok(SftpHandle {
         session: std::sync::Arc::new(parking_lot::Mutex::new(sess)),
         sftp: std::sync::Arc::new(parking_lot::Mutex::new(sftp)),

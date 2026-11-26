@@ -56,3 +56,13 @@ export function formatAxisSpeed(value: number): string {
   if (value >= 1024) return `${(value / 1024).toFixed(0)}K`;
   return `${Math.round(value)}B`;
 }
+
+/**
+ * CPU 实时主频：1000MHz 起按 GHz 显示，保留两位小数。
+ * 拿不到（0）时返回空串，由调用方决定是否渲染。
+ */
+export function formatCpuFreq(mhz: number): string {
+  if (!mhz || mhz <= 0) return "";
+  if (mhz >= 1000) return `${(mhz / 1000).toFixed(2)} GHz`;
+  return `${Math.round(mhz)} MHz`;
+}

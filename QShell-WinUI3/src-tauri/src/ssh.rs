@@ -218,7 +218,8 @@ fn open_direct_session(params: &SshConnectParams) -> Result<ssh2::Session, Strin
 }
 
 /// 连接目标主机：有跳板机时先连跳板，再在跳板通道上跑第二层 SSH。
-fn open_session(params: &SshConnectParams) -> Result<ssh2::Session, String> {
+/// SFTP / 监控也必须走这里，否则会绕过跳板机直连目标地址。
+pub(crate) fn open_session(params: &SshConnectParams) -> Result<ssh2::Session, String> {
     let proxy = match &params.proxy {
         Some(p) if !p.host.trim().is_empty() => p,
         _ => return open_direct_session(params),
