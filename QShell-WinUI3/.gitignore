@@ -40,3 +40,8 @@ Thumbs.db
 latest.json
 打包发版.ps1
 打包发版.bat
+# 内部操作文档（只留本地）
+RELEASE.md
+HANDOFF*.md
+ANDROID-HANDOFF.md
+WIN7-LITE-HANDOFF.md
