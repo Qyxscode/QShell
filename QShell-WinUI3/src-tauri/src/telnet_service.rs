@@ -81,7 +81,11 @@ pub async fn start_telnet_session(
         pty_master: None,
         pty_child: None,
     };
-    state.register_session(sid.clone(), sess);
+    if state.register_session(sid.clone(), sess).is_none() {
+        // 建连期间标签已被关闭：不启动读线程，连接随套接字释放
+        stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Ok("会话已在建立过程中关闭".to_string());
+    }
 
     spawn_telnet_reader_thread(app, state.inner().clone(), sid, instance_id, reader_stream, writer_stream, codec, stop_flag);
     Ok("Telnet 连接成功".to_string())

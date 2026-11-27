@@ -31,7 +31,7 @@ use probe::{
 use traffic::audit_host_traffic;
 use sftp::{
     list_sftp_files, sftp_mkdir, sftp_remove, sftp_rename,
-    sftp_chmod, sftp_stat, sftp_upload_file, sftp_download_file,
+    sftp_chmod, sftp_stat, sftp_upload_file, sftp_download_file, sftp_download_dir,
     sftp_home_dir, cancel_sftp_transfer, sftp_sync_directory, reset_sftp_channel
 };
 use port_forward::{
@@ -632,6 +632,7 @@ pub fn run() {
             sftp_stat,
             sftp_upload_file,
             sftp_download_file,
+            sftp_download_dir,
             cancel_sftp_transfer,
             reset_sftp_channel,
             sftp_sync_directory,

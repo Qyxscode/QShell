@@ -147,20 +147,31 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn close_generic_session(
+pub async fn close_generic_session(
     state: State<'_, GenericStreamManager>,
     session_id: String,
 ) -> Result<(), String> {
-    let sess = {
-        let mut map = state.sessions.lock();
-        map.remove(&session_id)
-    };
-
-    if let Some(sess) = sess {
-        sess.stop();
-        // 如果是 Telnet，写关闭信令让对端/读线程尽早唤醒并释放
-        let mut w = sess.writer.lock();
-        let _ = w.flush();
-    }
-    Ok(())
+    // 与前面 SSH 同理：关闭里含子进程 TerminateProcess 与套接字收尾，
+    // 都可能在主线程上等出可感知的停顿，整体挪到阻塞线程池执行。
+    let manager = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // 先持会话表锁再决定是关闭已注册会话还是登记墓碑：
+        // 与建连线程的「先会话表、后墓碑表」保持同一锁顺序，中间不留竞态窗口。
+        let removed = {
+            let mut map = manager.sessions.lock();
+            map.remove(&session_id)
+        };
+        if let Some(sess) = removed {
+            sess.stop();
+            // 如果是 Telnet，写关闭信令让对端/读线程尽早唤醒并释放
+            let mut w = sess.writer.lock();
+            let _ = w.flush();
+            return Ok(());
+        }
+        // 会话尚未注册：建连尚未完成，登记下让建连线程完成后丢弃
+        manager.cancel_pending(session_id);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("关闭会话任务异常: {}", e))?
 }

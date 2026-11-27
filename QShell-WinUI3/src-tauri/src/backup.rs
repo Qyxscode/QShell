@@ -145,6 +145,26 @@ pub async fn export_local_backup(
     })
 }
 
+/// 合法备份必然包含的顶层键（至少命中一个才认作 QShell 配置）。
+/// 只校验「是不是合法 JSON」是不够的：别的软件的 config.json、空对象、
+/// 被截断的文件都能通过 JSON 解析，写进去会把主机与密钥全部清空。
+const BACKUP_CONFIG_KEYS: [&str; 5] = ["version", "devices", "managed_hosts", "memos", "settings"];
+
+fn validate_backup_content(content: &[u8], source: &str) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(content).map_err(|e| format!("{}非有效 JSON: {}", source, e))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| format!("{}不是 QShell 配置对象", source))?;
+    if !BACKUP_CONFIG_KEYS.iter().any(|key| obj.contains_key(*key)) {
+        return Err(format!("{}不是 QShell 备份文件（缺少配置字段）", source));
+    }
+    // 结构校验：字段类型不符时直接拒绝，避免写入后配置无法读取
+    serde_json::from_slice::<crate::config::AppConfig>(content)
+        .map_err(|e| format!("{}结构不匹配: {}", source, e))?;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn import_local_backup(source_path: String) -> Result<BackupResult, String> {
     let file_bytes = fs::read(&source_path).map_err(|e| format!("读取导入文件失败: {}", e))?;
@@ -166,8 +186,8 @@ pub async fn import_local_backup(source_path: String) -> Result<BackupResult, St
         file_bytes
     };
 
-    // 验证是否是合法 JSON
-    let _: serde_json::Value = serde_json::from_slice(&content).map_err(|e| format!("备份文件非有效 JSON: {}", e))?;
+    // 验证是否是 QShell 备份（仅校验 JSON 语法不够，见 validate_backup_content）
+    validate_backup_content(&content, "备份文件")?;
 
     // 先把界面偏好摘出来（配置本体里不该保留它），再走正常的导入流程
     let ui_state = take_ui_state(&mut content);
@@ -407,7 +427,7 @@ pub async fn webdav_download_backup(cfg: WebDavConfig) -> Result<BackupResult, S
     };
 
     // 验证合法性并写回本地
-    let _: serde_json::Value = serde_json::from_slice(&content).map_err(|e| format!("云端文件解析失败: {}", e))?;
+    validate_backup_content(&content, "云端备份文件")?;
     // 界面偏好单独取出回传前端，配置本体里不保留
     let mut content = content;
     let ui_state = take_ui_state(&mut content);
@@ -426,8 +446,44 @@ pub async fn webdav_download_backup(cfg: WebDavConfig) -> Result<BackupResult, S
 
 #[cfg(test)]
 mod tests {
-    use super::preserve_webdav_settings;
+    use super::{preserve_webdav_settings, validate_backup_content};
     use std::fs;
+
+    #[test]
+    fn rejects_empty_json_object() {
+        // 空对象以前会被当作合法备份写入，等于清空全部主机
+        assert!(validate_backup_content(b"{}", "备份文件").is_err());
+    }
+
+    #[test]
+    fn rejects_foreign_config_file() {
+        let foreign = br#"{"theme":"dark","window":{"width":800},"plugins":[]}"#;
+        assert!(validate_backup_content(foreign, "备份文件").is_err());
+    }
+
+    #[test]
+    fn rejects_array_and_non_json() {
+        assert!(validate_backup_content(b"[]", "备份文件").is_err());
+        assert!(validate_backup_content(b"not json at all", "备份文件").is_err());
+    }
+
+    #[test]
+    fn rejects_wrong_field_types() {
+        assert!(validate_backup_content(br#"{"devices":"oops"}"#, "备份文件").is_err());
+        assert!(
+            validate_backup_content(br#"{"managed_hosts":[{"name":"a"}]}"#, "备份文件").is_err()
+        );
+    }
+
+    #[test]
+    fn accepts_real_backup() {
+        let ok = br#"{"version":"1.1","devices":[],"managed_hosts":[],"memos":[],"settings":null}"#;
+        assert!(validate_backup_content(ok, "备份文件").is_ok());
+
+        // 含真实主机（含本次新增的文件传输字段）也必须通过
+        let with_host = br#"{"devices":[{"group":"g","hosts":[{"name":"a","host":"10.0.0.1","port":22,"user":"root","file_protocol":"ftp","ftp_port":2121,"ftp_user":"u","ftp_pwd":"p","local_shell":"cmd"}]}],"managed_hosts":[]}"#;
+        assert!(validate_backup_content(with_host, "备份文件").is_ok());
+    }
 
     #[test]
     fn restore_keeps_current_webdav_credentials() {
@@ -439,7 +495,7 @@ mod tests {
         let config_path = dir.join("config.json");
         fs::write(
             &config_path,
-            r#"{"settings":{"webdav":{"url":"https://local.example/dav/","user":"alice","pwd":"secret","path":"/local.zip"}},"devices":[]}"#,
+            r#"{"settings":{"webdav":{"url":"https://local.example/dav/","user":"alice","pwd":"pw","path":"/local.zip"}},"devices":[]}"#,
         )
         .unwrap();
 
@@ -449,7 +505,7 @@ mod tests {
         let webdav = &value["settings"]["webdav"];
         assert_eq!(webdav["url"], "https://local.example/dav/");
         assert_eq!(webdav["user"], "alice");
-        assert_eq!(webdav["pwd"], "secret");
+        assert_eq!(webdav["pwd"], "pw");
         assert_eq!(webdav["path"], "/local.zip");
         assert_eq!(value["devices"][0]["group"], "imported");
 
@@ -470,13 +526,13 @@ mod tests {
         )
         .unwrap();
 
-        let imported = br#"{"settings":{"webdav":{"url":"https://cloud.example/dav/","user":"cloud","pwd":"cloud-secret","path":"/cloud.zip"}}}"#;
+        let imported = br#"{"settings":{"webdav":{"url":"https://cloud.example/dav/","user":"cloud","pwd":"cpw","path":"/cloud.zip"}}}"#;
         let merged = preserve_webdav_settings(&config_path, imported).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&merged).unwrap();
         let webdav = &value["settings"]["webdav"];
         assert_eq!(webdav["url"], "https://local.example/dav/");
         assert_eq!(webdav["user"], "alice");
-        assert_eq!(webdav["pwd"], "cloud-secret");
+        assert_eq!(webdav["pwd"], "cpw");
         assert_eq!(webdav["path"], "/local.zip");
 
         let _ = fs::remove_dir_all(&dir);

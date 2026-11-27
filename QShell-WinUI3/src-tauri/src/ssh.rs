@@ -107,17 +107,52 @@ pub struct ActiveSession {
     pub session: Arc<Mutex<ssh2::Session>>,
     pub sftp: Arc<Mutex<Option<SftpHandle>>>,
     pub monitor: Arc<Mutex<Option<SftpHandle>>>,
+    /// 传输专用连接。上传/下载共用这一条，与浏览列表用的 `sftp` 分离，
+    /// 这样大文件在传的时候右栏目录照样能刷新；同时避免每个文件都新建
+    /// 一条 SSH 连接（批量传输容易触发服务端 MaxStartups 限制）。
+    pub transfer: Arc<Mutex<Option<SftpHandle>>>,
     pub params: SshConnectParams,
+}
+
+/// 丢弃一条 SFTP / 监控 / 传输连接。
+///
+/// 这类句柄各自持有一条真实 TCP + SSH 会话，析构时 libssh2 仍会尝试发送
+/// DISCONNECT，超时取自 `set_timeout`（建连时设的是 15 秒）。连接被中间设备
+/// 回收后，这一步会实实在在地阻塞十几秒——因此先把握在手里的超时压到 200ms，
+/// 再让结构析构。取不到锁说明还有线程在用这条连接（它持有 Arc），
+/// 此时直接解引用计数即可，真正的析构由最后一个持有者负责。
+pub(crate) fn drop_sftp_handle_quietly(slot: Arc<Mutex<Option<SftpHandle>>>) {
+    if let Some(mut guard) = slot.try_lock() {
+        if let Some(handle) = guard.take() {
+            let session_arc = handle.session.clone();
+            if let Some(sess) = session_arc.try_lock() {
+                sess.set_timeout(200);
+            }
+            drop(handle);
+            // session_arc 是最后一个引用时，Session 在这里析构，超时已是 200ms
+        }
+    }
 }
 
 pub struct SshManager {
     pub sessions: Arc<Mutex<HashMap<String, ActiveSession>>>,
+    /// 「建连过程中就被关闭」的会话 id。
+    ///
+    /// 建连（TCP + 握手 + 认证）是阻塞的，可能要几秒。用户在这段时间内关闭标签时，
+    /// `close_ssh_session` 从会话表里找不到该 id，只能什么都不做；等握手完成后
+    /// 建连线程仍会把会话注册进去，于是留下一个前端已无引用、IO 线程却一直跑的
+    /// 幽灵会话（占连接数、占服务端一个 shell）。
+    ///
+    /// 这里记录待丢弃的 id，注册前先对照一次；锁顺序统一为 sessions → pending_cancel，
+    /// 两边同时持锁，避免「刚插入就被漏判」的竞态窗口。
+    pub pending_cancel: Arc<Mutex<Vec<String>>>,
 }
 
 impl SshManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
+            pending_cancel: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -410,6 +445,7 @@ pub async fn start_ssh_session(
     let term_type = params.term_type.clone();
 
     let sessions_map = state.sessions.clone();
+    let pending_cancel = state.pending_cancel.clone();
     
     // 建连、握手与认证在阻塞线程中执行
     tokio::task::spawn_blocking(move || {
@@ -418,6 +454,7 @@ pub async fn start_ssh_session(
         // SFTP uses a separate connection, created lazily on first use.
         let sftp_slot: Arc<Mutex<Option<SftpHandle>>> = Arc::new(Mutex::new(None));
         let monitor_slot: Arc<Mutex<Option<SftpHandle>>> = Arc::new(Mutex::new(None));
+        let transfer_slot: Arc<Mutex<Option<SftpHandle>>> = Arc::new(Mutex::new(None));
 
         let term = resolve_term_type(term_type.as_deref(), &sess);
         let mut channel = sess.channel_session().map_err(|e| format!("创建 SSH 通道失败: {}", e))?;
@@ -429,22 +466,53 @@ pub async fn start_ssh_session(
 
         let channel_arc = Arc::new(Mutex::new(channel));
         let sess_arc = Arc::new(Mutex::new(sess));
+        // IO 线程必须自己持有一份 Session 引用：会话表里的结构被提前移除时，
+        // 若此时 Read 线程仍在读通道，Session 被析构就成了释放后使用。
+        let io_session_keep = sess_arc.clone();
 
         // 命令队列：写 / 改尺寸 / 关闭都交给 IO 线程串行执行
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<ChannelCommand>();
 
-        // 注册会话
-        sessions_map.lock().insert(
-            session_id.clone(),
-            ActiveSession {
-                channel: channel_arc.clone(),
-                tx: cmd_tx,
-                session: sess_arc,
-                sftp: sftp_slot,
-                monitor: monitor_slot,
-                params,
-            },
-        );
+        // 注册会话。若前端在建连期间已关闭该标签，此处不再登记，
+        // sess / channel 随作用域结束被丢弃，连接自然关闭。
+        let replaced = {
+            let mut sessions = sessions_map.lock();
+            let mut cancelled = pending_cancel.lock();
+            if let Some(pos) = cancelled.iter().position(|id| id == &session_id) {
+                cancelled.remove(pos);
+                return Ok("会话已在建立过程中关闭".to_string());
+            }
+            sessions.insert(
+                session_id.clone(),
+                ActiveSession {
+                    channel: channel_arc.clone(),
+                    tx: cmd_tx,
+                    session: sess_arc,
+                    sftp: sftp_slot,
+                    monitor: monitor_slot,
+                    transfer: transfer_slot,
+                    params,
+                },
+            )
+        };
+        // 同 id 重连：被替换掉的旧会话，其独立的 SFTP / 监控连接已不属于当前会话。
+        // 旧实现在这里直接丢弃结构，句柄仍被正在跑的传输任务持有，于是继续用一条
+        // 无人管理的连接读写。这里主动清空槽位，让旧句柄尽早关闭。
+        // 用 try_lock 而不是 lock：正在被使用的槽位不能阻塞建连线程。
+        if let Some(old) = replaced {
+            let old_sftp = old.sftp.clone();
+            let old_monitor = old.monitor.clone();
+            let old_transfer = old.transfer.clone();
+            // 旧会话的 SFTP / 监控 / 传输连接各是一条真实 TCP，析构里带网络收尾，
+            // 被中间设备回收时会阻塞十几秒。这里不能占用建连线程，
+            // 否则用户看到的是「新标签一直转圈」。整体交给独立线程收尾。
+            std::thread::spawn(move || {
+                drop(old);
+                drop_sftp_handle_quietly(old_sftp);
+                drop_sftp_handle_quietly(old_monitor);
+                drop_sftp_handle_quietly(old_transfer);
+            });
+        }
 
         // 单一 IO 线程：读写 + 改尺寸 + 关闭全部在这里串行执行，
         // 避免 libssh2 session 被多线程交替访问（网络抖动时会导致 transport 层错乱）。
@@ -455,6 +523,8 @@ pub async fn start_ssh_session(
         let sid = session_id.clone();
 
         std::thread::spawn(move || {
+            // 让 Session 活到本线程退出（见上方 io_session_keep 的说明）
+            let session_keep = io_session_keep;
             let mut buf = [0u8; 32768];
             let mut pending = String::new();
             // 断开原因：传给前端显示，便于判断是远端退出、网络问题还是内部错误
@@ -588,18 +658,38 @@ pub async fn start_ssh_session(
             // its separate SFTP/monitor connections) immediately, but only if it
             // is still the same channel instance. This prevents an old reader
             // thread from deleting a freshly reconnected session with the same id.
-            {
+            //
+            // 关键点：结构与全局锁解耦。被移除的 ActiveSession 析构时会关闭它那几条
+            // 独立的 SSH 连接，连接已失效时这一步会阻塞数秒；若在持锁期间析构，
+            // 期间所有会话命令（写、改尺寸、关闭）都要排队。
+            let removed = {
                 let mut sessions = cleanup_sessions.lock();
                 let same_session = sessions
                     .get(&sid)
                     .map(|active| Arc::ptr_eq(&active.channel, &cleanup_channel))
                     .unwrap_or(false);
                 if same_session {
-                    sessions.remove(&sid);
+                    sessions.remove(&sid)
+                } else {
+                    None
                 }
+            };
+            if let Some(active) = removed {
+                let sftp = active.sftp.clone();
+                let monitor = active.monitor.clone();
+                let transfer = active.transfer.clone();
+                drop(active);
+                drop_sftp_handle_quietly(sftp);
+                drop_sftp_handle_quietly(monitor);
+                drop_sftp_handle_quietly(transfer);
             }
             // 监控/网络采样缓存以 session_id 为键，会话消失时必须一并清理，否则会无界增长。
             crate::monitor::clear_session_caches(&sid);
+            // 本线程即将退出：Session 若已失效，析构里的 DISCONNECT 会按 15 秒超时阻塞，
+            // 退出前压到 200ms（连接健康时本来就只是一次 send，不受影响）。
+            if let Some(sess) = session_keep.try_lock() {
+                sess.set_timeout(200);
+            }
         });
 
         Ok("SSH 会话建立成功".to_string())
@@ -641,16 +731,47 @@ pub fn resize_ssh_session(
 }
 
 #[tauri::command]
-pub fn close_ssh_session(
+pub async fn close_ssh_session(
     state: tauri::State<'_, SshManager>,
     session_id: String,
 ) -> Result<(), String> {
     crate::monitor::clear_session_caches(&session_id);
-    if let Some(active) = state.sessions.lock().remove(&session_id) {
-        // 通知 IO 线程收尾（它会关闭通道并清理会话）
-        let _ = active.tx.send(ChannelCommand::Close);
+    // 同步命令由 Tauri 在主线程执行：一旦这里阻塞（例如析构一条已被回收的
+    // SFTP 连接，libssh2 的 DISCONNECT 会等满 15 秒超时），整个界面就会卡住。
+    // 因此关闭动作整体挪到阻塞线程池，主线程只负责发起。
+    let sessions_map = state.sessions.clone();
+    let cancelled_map = state.pending_cancel.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // 先持会话表锁再决定是关闭已注册会话还是登记墓碑：
+        // 与建连线程的「先会话表、后墓碑表」保持同一锁顺序，中间不留竞态窗口。
+        // 取出结构后立刻释放全局锁，析构放到锁外。
+        let removed = {
+            let mut sessions = sessions_map.lock();
+            sessions.remove(&session_id)
+        };
+        if let Some(active) = removed {
+            // 通知 IO 线程收尾（它会关闭通道并清理会话）
+            let _ = active.tx.send(ChannelCommand::Close);
+            let sftp = active.sftp.clone();
+            let monitor = active.monitor.clone();
+            let transfer = active.transfer.clone();
+            drop(active);
+            drop_sftp_handle_quietly(sftp);
+            drop_sftp_handle_quietly(monitor);
+            drop_sftp_handle_quietly(transfer);
+            return Ok(());
+        }
+        // 会话尚未注册：多半是握手还没完成，登记下让建连线程完成后直接丢弃
+        let mut cancelled = cancelled_map.lock();
+        if !cancelled.iter().any(|id| id == &session_id) {
+            cancelled.push(session_id);
+            // 上限保护：正常路径下建连线程会及时取走，超出说明有异常残留，丢弃最旧的即可
+            if cancelled.len() > 128 {
+                cancelled.remove(0);
+            }
+        }
         Ok(())
-    } else {
-        Ok(())
-    }
+    })
+    .await
+    .map_err(|e| format!("关闭会话任务异常: {}", e))?
 }

@@ -132,7 +132,15 @@ pub struct LocalKnownFolder {
 }
 
 #[tauri::command]
-pub fn local_known_folders() -> Vec<LocalKnownFolder> {
+pub async fn local_known_folders() -> Vec<LocalKnownFolder> {
+    // 每个候选路径都要 is_dir()：被重定向到网络盘的「文档/图片」在断连时
+    // 单次可能卡数秒，放到 blocking 线程池，避免拖住 IPC。
+    tokio::task::spawn_blocking(collect_known_folders)
+        .await
+        .unwrap_or_default()
+}
+
+fn collect_known_folders() -> Vec<LocalKnownFolder> {
     let mut folders = Vec::new();
     let home = std::env::var("USERPROFILE")
         .ok()
@@ -215,7 +223,14 @@ fn expand_env_vars(value: &str) -> String {
 }
 
 #[tauri::command]
-pub fn local_roots() -> Vec<LocalEntry> {
+pub async fn local_roots() -> Vec<LocalEntry> {
+    // 枚举盘符时对每个盘符做 exists()，映射网络盘断开时可能长时间无响应。
+    tokio::task::spawn_blocking(collect_roots)
+        .await
+        .unwrap_or_default()
+}
+
+fn collect_roots() -> Vec<LocalEntry> {
     let mut roots = Vec::new();
 
     #[cfg(windows)]

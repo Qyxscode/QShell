@@ -71,6 +71,7 @@ pub async fn start_local_shell_session(
     let master_arc = Arc::new(Mutex::new(master));
     let child_arc = Arc::new(Mutex::new(child));
 
+    let child_for_cancel = child_arc.clone();
     let sess = GenericSession {
         instance_id,
         protocol: ProtocolType::Local,
@@ -84,7 +85,13 @@ pub async fn start_local_shell_session(
         pty_master: Some(master_arc),
         pty_child: Some(child_arc),
     };
-    state.register_session(sid.clone(), sess);
+    if state.register_session(sid.clone(), sess).is_none() {
+        // 建连期间标签已被关闭：终止刚拉起的子进程并释放 PTY
+        stop_flag.store(true, Ordering::SeqCst);
+        let mut child = child_for_cancel.lock();
+        let _ = child.kill();
+        return Ok("会话已在建立过程中关闭".to_string());
+    }
 
     spawn_local_reader_thread(app, state.inner().clone(), sid, instance_id, reader, stop_flag);
 

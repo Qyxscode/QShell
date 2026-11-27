@@ -326,6 +326,9 @@ function closeToolWindow(id: string) {
     clearPortScan();
   }
   if (closing?.type === "scandetail") clearPortScan();
+  // 关闭子网扫描面板必须停止后台扫描：否则窗口已不可见，扫描仍在跑，
+  // 再次打开时「开始扫描」又会被 subnetRunning 挡住，表现为按钮失效。
+  if (closing?.type === "subnet") stopSubnetScan();
   stopPingTimerForWindow(id);
   toolWindows.value = toolWindows.value.filter(w => w.id !== id);
 }
@@ -990,9 +993,13 @@ const subnetPercent = computed(() => {
 });
 const subnetProgress = ref({ done: 0, total: 0 });
 let subnetAbort = false;
+// 运行代号：停止时自增，让仍在跑的旧循环失效。
+// 单靠 subnetAbort 布尔会被「停止后立刻重新开始」重置为 false，导致两轮并发写结果。
+let subnetRunToken = 0;
 
 
 function stopSubnetScan() {
+  subnetRunToken++;
   subnetAbort = true;
   subnetRunning.value = false;
 }
@@ -1045,6 +1052,7 @@ async function startSubnetScan() {
   const ips = expandCidrInput(subnetInput.value);
   if (ips.length === 0) return;
 
+  const token = ++subnetRunToken;
   subnetAbort = false;
   subnetRunning.value = true;
   subnetHosts.value = [];
@@ -1053,7 +1061,7 @@ async function startSubnetScan() {
   // 分批探测：每批返回就立即追加，做到「边扫边出结果」
   const BATCH = 32;
   for (let i = 0; i < ips.length; i += BATCH) {
-    if (subnetAbort) break;
+    if (subnetAbort || token !== subnetRunToken) break;
     const batch = ips.slice(i, i + BATCH);
     try {
       const res = await invoke<Array<{ ip: string; alive: boolean; rtt_ms: number; mac: string; device_hint: string }>>(
@@ -1064,7 +1072,7 @@ async function startSubnetScan() {
           concurrency: subnetConcurrency.value,
         },
       );
-      if (subnetAbort) break;
+      if (subnetAbort || token !== subnetRunToken) break;
       const mapped = res.map(r => ({
         ip: r.ip,
         alive: r.alive,
@@ -1089,7 +1097,8 @@ async function startSubnetScan() {
       total: ips.length,
     };
   }
-  subnetRunning.value = false;
+  // 仅当前这一轮有权复位，避免上一轮结束时把新一轮的运行状态置为 false
+  if (token === subnetRunToken) subnetRunning.value = false;
 }
 
 function openSubnetDetail() {
@@ -1744,6 +1753,9 @@ function startDragging(e: MouseEvent) {
     titleBarDoubleClickToggleAt = performance.now();
     return;
   }
+  // 顶栏空白处按下即进入窗口拖动，WebView2 不再派发后续 click，
+  // 浮层收起只能在这里处理，否则点顶栏空白处气泡不会消失。
+  dismissTransientPopovers(e.target as HTMLElement);
   if (appWindow) appWindow.startDragging();
 }
 
@@ -1887,6 +1899,8 @@ interface SessionTab {
   fileError?: string;
   resizeObserver?: ResizeObserver;
   unlisten?: UnlistenFn;
+  /** ssh-closed 事件的反注册函数，关闭会话时必须调用，否则监听持续累积 */
+  unlistenClosed?: UnlistenFn;
   alive: boolean;
   is_connecting?: boolean;
   is_locked?: boolean;
@@ -2717,7 +2731,7 @@ interface TransferTask {
 // 拖拽批量上传/多选下载会在同一毫秒发起多个任务；只用 Date.now() 会得到相同 taskId，
 // 后端会因此共用同一个 .qshell-tmp-<taskId> 临时文件，前端 v-for 的 key 也会冲突。
 let transferTaskSeq = 0;
-function makeTaskId(prefix: "up" | "down"): string {
+function makeTaskId(prefix: "up" | "down" | "sync"): string {
   transferTaskSeq = (transferTaskSeq + 1) % 1_000_000;
   return `${prefix}-${Date.now()}-${transferTaskSeq}`;
 }
@@ -2799,6 +2813,11 @@ function readAlertIgnores(): AlertIgnoreStore {
 }
 
 function writeAlertIgnores(store: AlertIgnoreStore) {
+  // 全新安装时后端返回的 settings 为 null，直接赋值会抛
+  // "Cannot set properties of null"，导致忽略功能整体失效。
+  if (!(configData.value as any).settings) {
+    (configData.value as any).settings = {};
+  }
   (configData.value.settings as any).alert_ignores = {
     expire: store.expire || {},
     traffic: store.traffic || {},
@@ -2944,6 +2963,36 @@ function toggleTransferMonitor(e?: MouseEvent) {
   showTransferMonitor.value = !showTransferMonitor.value;
 }
 
+/**
+ * 收起顶栏与监控面板上的临时浮层（通知气泡、传输气泡、网卡选择）。
+ * 点击浮层内部或其触发按钮时保持不变。
+ */
+function dismissTransientPopovers(target: HTMLElement | null) {
+  if (!target) return;
+
+  if (showAlertPopover.value) {
+    if (!target.closest(".alert-popover") && !target.closest(".btn-toggle-alert")) {
+      showAlertPopover.value = false;
+    }
+  }
+
+  if (showTransferMonitor.value) {
+    // 自动弹出的气泡要放过触发它的那一次点击，否则「弹出来立刻被收起」
+    const justOpened = Date.now() - transferPopoverOpenedAt < 300;
+    if (
+      !justOpened &&
+      !target.closest(".transfer-monitor-popover:not(.alert-popover)") &&
+      !target.closest(".btn-toggle-transfer")
+    ) {
+      showTransferMonitor.value = false;
+    }
+  }
+
+  if (showNetIfPicker.value && !target.closest(".net-if-wrap")) {
+    showNetIfPicker.value = false;
+  }
+}
+
 function handleGlobalClick(e: MouseEvent) {
   closeContextMenu();
   closeLocalPickerMenu();
@@ -2966,21 +3015,8 @@ function handleGlobalClick(e: MouseEvent) {
   if (showNetRangeMenu.value && !target.closest(".net-range-wrap")) {
     showNetRangeMenu.value = false;
   }
-  // 点击非通知气泡及非通知按钮区域时，自动收起通知气泡
-  if (showAlertPopover.value) {
-    if (!target.closest(".alert-popover") && !target.closest(".btn-toggle-alert")) {
-      showAlertPopover.value = false;
-    }
-  }
 
-  // 点击非传输气泡及非传输按钮区域时，自动收起传输气泡
-  if (showTransferMonitor.value) {
-    // 自动弹出的气泡要放过触发它的那一次点击，否则「弹出来立刻被收起」
-    const justOpened = Date.now() - transferPopoverOpenedAt < 300;
-    if (!justOpened && !target.closest(".transfer-monitor-popover:not(.alert-popover)") && !target.closest(".btn-toggle-transfer")) {
-      showTransferMonitor.value = false;
-    }
-  }
+  dismissTransientPopovers(target);
 }
 
 /** 窗口重新获得焦点、或点了界面空白处时，把光标送回终端。
@@ -3556,20 +3592,28 @@ const transferConflictModal = ref<{
   title: string;
   message: string;
   fileName: string;
+  /** file：单文件冲突，提供「跳过」；dir：目录冲突，提供「合并覆盖」与「另存为新文件夹」 */
+  mode: "file" | "dir";
   resolve: ((choice: TransferConflictChoice) => void) | null;
 }>({
   show: false,
   title: "文件已存在",
   message: "",
   fileName: "",
+  mode: "file",
   resolve: null,
 });
 
-function askTransferConflict(title: string, message: string, fileName: string): Promise<TransferConflictChoice> {
+function askTransferConflict(
+  title: string,
+  message: string,
+  fileName: string,
+  mode: "file" | "dir" = "file",
+): Promise<TransferConflictChoice> {
   return new Promise((resolve) => {
     // 并发冲突（拖拽批量上传）时不能直接覆盖，否则上一个 Promise 永远悬挂。
     const pending = transferConflictModal.value.resolve;
-    transferConflictModal.value = { show: true, title, message, fileName, resolve };
+    transferConflictModal.value = { show: true, title, message, fileName, mode, resolve };
     if (pending) pending("cancel");
   });
 }
@@ -5159,7 +5203,20 @@ async function saveHostForm() {
   }
 
   evaluateHostAlerts();
-  await invoke("save_hosts_config", { config: configData.value });
+  // 保存失败时必须明确报错并保留弹窗：原来直接 await，写盘失败或配置未解锁时
+  // 界面照常关闭，用户以为已保存，重启后改动全部丢失。
+  try {
+    await invoke("save_hosts_config", { config: configData.value });
+  } catch (e: any) {
+    const msg = String(e ?? "");
+    showAppToast(
+      msg.includes("CONFIG_LOCKED")
+        ? "配置已加密且尚未解锁，本次修改未写入磁盘"
+        : `保存主机失败：${msg || "未知错误"}`,
+      "error",
+    );
+    return;
+  }
   hostModal.value.show = false;
 }
 
@@ -7350,6 +7407,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     newTab.is_connecting = false;
     newTab.alive = false;
     console.error("[session] 终端挂载点不存在:", sid);
+    showAppToast("终端界面未能初始化，该会话已关闭", "error");
+    closeSession(newTab);
     return;
   }
 
@@ -7569,6 +7628,8 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     });
 
     const unlisten = await listen<string>(`ssh-data-${sid}`, (event) => {
+      // 标签已关闭时终端已 dispose，继续写入会抛 "Terminal has been disposed"
+      if (newTab.closingByUser) return;
       // 输出高亮：关键字着色（开关在偏好设置里，默认开启）
       term.write(applyOutputHighlight(sid, event.payload));
       // 只保留最近输出片段，用于判断当前是否处于密码输入提示（避免把密码写进历史）
@@ -7577,7 +7638,9 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
     newTab.unlisten = unlisten;
 
     // 监听断开事件：1:1 对标 ssh8.py handle_terminal_disconnected
-    listen<string>(`ssh-closed-${sid}`, (event) => {
+    const unlistenClosed = await listen<string>(`ssh-closed-${sid}`, (event) => {
+      // 反注册前可能已有事件在队列中，标签已关闭时直接忽略
+      if (newTab.closingByUser) return;
       newTab.alive = false;
       newTab.is_connecting = false;
       newTab.latency = 0;
@@ -7610,6 +7673,14 @@ async function openSession(h: HostItem, restore?: { buffer?: string; sftpPath?: 
       }
       scheduleAutoReconnect(newTab);
     });
+    // 断开监听从前只注册不反注册，每开关一次会话就泄漏一个全局监听，
+    // 且回调会继续往已 dispose 的终端写文本。统一挂到 tab 上，关闭时释放。
+    if (newTab.closingByUser) {
+      // 注册期间标签已被关闭（连接较慢时会发生），立即反注册
+      unlistenClosed();
+    } else {
+      newTab.unlistenClosed = unlistenClosed;
+    }
 
     if (restore?.buffer) {
       // 从快照恢复：写入上次的终端内容，不自动连接
@@ -7712,6 +7783,10 @@ async function doStartSsh(tab: SessionTab) {
       tab.alive = true;
       tab.is_connecting = false;
       tab.fileProtocol = "ftp";
+      if (!isSessionTabActive(tab)) {
+        discardOrphanSession(tab);
+        return;
+      }
       term.writeln(`\x1b[32m[FTP] 已连接 ${h.host}:${h.port || 21}\x1b[0m`);
       term.writeln("FTP 会话请在右侧文件面板浏览与下载。");
       return;
@@ -7790,6 +7865,12 @@ async function doStartSsh(tab: SessionTab) {
           term_type: h.term_type || "auto",
         }
       });
+    }
+    // 建连期间用户可能已关闭该标签：后端刚建立的会话在前端已无引用，
+    // 必须立刻回收，否则会留下持续占用连接与内存的幽灵会话。
+    if (!isSessionTabActive(tab)) {
+      discardOrphanSession(tab);
+      return;
     }
     // 建立文件会话：auto = SSH 用 SFTP、非 SSH 尝试 FTP；none 不启用
     let fileProto: "none" | "sftp" | "ftp" = "none";
@@ -8115,6 +8196,20 @@ function switchSession(sid: string) {
   });
 }
 
+/** 标签是否仍存在于界面中。建连/重连是异步的，用户可能在等待期间关闭标签。 */
+function isSessionTabActive(tab: SessionTab): boolean {
+  if (tab.closingByUser) return false;
+  return sessions.value.some(s => s.id === tab.id);
+}
+
+/** 回收「前端已放弃、后端刚建立」的会话，避免留下持续占用连接的幽灵会话。 */
+function discardOrphanSession(tab: SessionTab) {
+  const cmd = isGenericProtocol(tab.host?.protocol) ? "close_generic_session" : "close_ssh_session";
+  invoke(cmd, { sessionId: tab.id }).catch(() => {});
+  invoke("ftp_close", { sessionId: tab.id }).catch(() => {});
+  sessionMonitorStats.delete(tab.id);
+}
+
 function closeSession(tab: SessionTab) {
   if (tab.is_locked) return; // 锁定状态禁止关闭
   clearPaneOfSession(tab.id);
@@ -8124,6 +8219,7 @@ function closeSession(tab: SessionTab) {
   cancelAutoReconnect(tab);
   if (tab.resizeObserver) tab.resizeObserver.disconnect();
   if (tab.unlisten) tab.unlisten();
+  if (tab.unlistenClosed) tab.unlistenClosed();
   if (tab.termInstance) tab.termInstance.dispose();
   if (isGenericProtocol(tab.host?.protocol)) {
     invoke("close_generic_session", { sessionId: tab.id });
@@ -8289,19 +8385,28 @@ function sendHistoryCommand(cmd: string) {
   });
 }
 
-// 左键点击历史条目只复制，不发送——发送执行已经在右键菜单里，避免误点直接跑命令
-let historyCopyTipTimer: number | null = null;
-const historyCopyTip = ref("");
+// 全局轻提示：用于不适合弹窗打断的操作反馈（复制成功、保存失败等）
+let appToastTimer: number | null = null;
+const appToastText = ref("");
+const appToastKind = ref<"info" | "error">("info");
 
+function showAppToast(text: string, kind: "info" | "error" = "info") {
+  if (!text) return;
+  appToastText.value = text;
+  appToastKind.value = kind;
+  if (appToastTimer !== null) window.clearTimeout(appToastTimer);
+  // 报错信息需要更长的阅读时间
+  appToastTimer = window.setTimeout(() => {
+    appToastText.value = "";
+    appToastTimer = null;
+  }, kind === "error" ? 4200 : 1600);
+}
+
+// 左键点击历史条目只复制，不发送——发送执行已经在右键菜单里，避免误点直接跑命令
 function copyHistoryCommandInline(cmd: string) {
   if (!cmd) return;
   void writeClipboardText(cmd);
-  historyCopyTip.value = "已复制当前历史命令";
-  if (historyCopyTipTimer !== null) window.clearTimeout(historyCopyTipTimer);
-  historyCopyTipTimer = window.setTimeout(() => {
-    historyCopyTip.value = "";
-    historyCopyTipTimer = null;
-  }, 1600);
+  showAppToast("已复制当前历史命令");
 }
 
 const historyFilter = ref<"all" | "current">("all");
@@ -9182,7 +9287,9 @@ async function startDirSync() {
   const m = dirSyncModal.value;
   const sess = activeSession.value;
   if (!sess || !m.localDir.trim() || !m.remoteDir.trim()) return;
-  const taskId = `sync_${Date.now()}`;
+  // 与上传/下载共用自增序号：毫秒级并发点时 Date.now() 会重复，后端按 task_id
+  // 生成远端临时文件名，重复会让两个任务写同一个临时文件。
+  const taskId = makeTaskId("sync");
   m.show = false;
   // 延迟到本次 click 事件结束后再弹，否则会被 handleGlobalClick 立即收起
   window.setTimeout(() => {
@@ -9512,6 +9619,80 @@ async function sftpTriggerDownload(item: SftpFileItem): Promise<boolean> {
   }
 }
 
+/**
+ * 下载整个远端目录。用户选择的是保存位置（父目录），实际落盘到
+ * `<父目录>/<远端目录名>`，与常见文件管理器的行为一致。
+ */
+async function sftpTriggerDownloadDir(item: SftpFileItem): Promise<boolean> {
+  closeContextMenu();
+  if (!activeSessionId.value) return false;
+  if (isFtpSession.value) {
+    showAppToast("FTP 会话不支持下载整个文件夹", "error");
+    return false;
+  }
+
+  const base = currentSftpPath.value.endsWith("/") ? currentSftpPath.value : currentSftpPath.value + "/";
+  const remotePath = (base + item.name).replace(/\/+$/, "");
+
+  const parentDir = await openLocalFileBrowser({
+    action: "open",
+    title: `下载文件夹: ${item.name}`,
+    pickDir: true,
+  });
+  if (!parentDir) return false;
+
+  // 目标目录已存在时必须先确认：否则第二次下载会静默合并进已有目录，用户无从察觉
+  const sep = parentDir.includes("\\") ? "\\" : "/";
+  let targetDir = parentDir.replace(/[\\/]+$/, "") + sep + item.name;
+  if (await localPathExists(targetDir)) {
+    const choice = await askTransferConflict(
+      "目标文件夹已存在",
+      `所选位置已存在同名文件夹“${item.name}”。合并覆盖会替换其中的同名文件，其余文件保留。`,
+      item.name,
+      "dir",
+    );
+    if (choice === "cancel" || choice === "skip") return false;
+    if (choice === "rename") {
+      targetDir = await availableLocalPath(targetDir);
+    }
+  }
+
+  const taskId = makeTaskId("down");
+  const sessionId = activeSessionId.value;
+  const displayName = `${item.name}/`;
+
+  revealTransferMonitor();
+  activeTransfers.value.push({
+    task_id: taskId,
+    // 后端扫描出真实总字节数之前先给一个占位值，避免进度条除零
+    filename: displayName,
+    is_upload: false,
+    transferred: 0,
+    total: 1,
+    speed_bps: 0,
+    status: "running",
+  });
+
+  try {
+    await invoke("sftp_download_dir", {
+      sessionId,
+      remotePath,
+      localPath: targetDir,
+      taskId,
+    });
+    return true;
+  } catch (e: any) {
+    console.error("目录下载错误:", e);
+    const task = activeTransfers.value.find(t => t.task_id === taskId);
+    if (task && task.status === "running") {
+      task.status = "failed";
+      task.speed_bps = 0;
+      task.error = String(e?.message || e || "下载文件夹失败");
+    }
+    return false;
+  }
+}
+
 // SFTP 查看文件属性 (SFTPPropertiesDialog)
 async function sftpViewProperties(item: SftpFileItem) {
   closeContextMenu();
@@ -9577,7 +9758,7 @@ async function sftpSaveChmod() {
     await fetchSftpFiles(currentSftpPath.value);
   } catch (e: any) {
     console.error("修改权限失败:", e);
-    alert(`修改权限失败: ${e?.message || e}`);
+    showAppToast(`修改权限失败：${String(e?.message || e)}`, "error");
   }
 }
 
@@ -9759,10 +9940,11 @@ async function sftpDeleteItemsConfirmed(targets: SftpFileItem[]) {
 
   selectedSftpFiles.value = [];
   selectedSftpFile.value = null;
-  await fetchSftpFiles(currentSftpPath.value);
+  // 固定用开始删除时的会话刷新，避免中途切标签后刷新到另一台主机的目录
+  await fetchSftpFiles(currentSftpPath.value, sessionId);
 
   if (failCount > 0) {
-    alert(`批量删除完成，其中 ${failCount} 项删除失败: ${lastError}`);
+    showAppToast(`${failCount} 项删除失败：${lastError}`, "error");
   }
 }
 
@@ -9772,23 +9954,37 @@ function sendMemoCommand(cmd: string) {
   const cur = sessions.value.find(s => s.id === activeSessionId.value);
   if (cur && cur.alive) {
     // 只读模式禁止向远端写入任何内容，与粘贴/键盘输入保持一致
-    if (cur.read_only) return;
+    if (cur.read_only) {
+      showAppToast("当前会话处于只读模式，无法发送命令", "error");
+      return;
+    }
     // 和「只填充」走同一条写入通道，Telnet / 串口 / 本地终端也要能执行
     const writeCommand = isGenericProtocol(cur.host?.protocol) ? "write_generic_session" : "write_ssh_session";
-    invoke(writeCommand, { sessionId: cur.id, data: cmd + "\n" });
+    invoke(writeCommand, { sessionId: cur.id, data: cmd + "\n" }).catch((err: any) => {
+      // 连接刚断开或只读锁定等情况后端会拒绝写入，必须让用户看到，不能静默
+      showAppToast(`命令发送失败：${String(err?.message || err)}`, "error");
+    });
     // 执行完把焦点交回终端：不然还得再点一下终端才能继续敲命令
     nextTick(() => cur.termInstance?.focus());
   } else {
-    navigator.clipboard.writeText(cmd);
+    // 没有可写入的在线会话：退化为复制，并明确告知用户命令未执行
+    void writeClipboardText(cmd);
+    showAppToast("当前没有在线会话，命令已复制到剪贴板");
   }
 }
 
 // 将备忘录命令填入当前 SSH 终端输入行，但不发送回车，因此不会执行。
 function fillMemoCommandToTerminal(cmd: string) {
   const cur = sessions.value.find(s => s.id === activeSessionId.value);
-  if (!cur || !cur.alive) return;
+  if (!cur || !cur.alive) {
+    showAppToast("当前没有在线会话，无法填入命令", "error");
+    return;
+  }
   // 只读模式禁止向远端写入任何内容，与粘贴/键盘输入保持一致。
-  if (cur.read_only) return;
+  if (cur.read_only) {
+    showAppToast("当前会话处于只读模式，无法写入命令", "error");
+    return;
+  }
   // 只填充不执行：换行会被远端 shell 立即执行，
   // 所以多行命令只填充首行，并明确告知用户，避免"部分执行"。
   const normalized = cmd.replace(/\r\n/g, "\n").replace(/[\r\n]+$/, "");
@@ -9796,13 +9992,12 @@ function fillMemoCommandToTerminal(cmd: string) {
   const firstLine = (lines[0] || "").trim();
   if (lines.length > 1) {
     console.warn("[memo] 命令包含多行，已仅填充首行以避免意外执行");
-    alert(`该命令包含 ${lines.length} 行，为安全起见已仅填充首行：\n${firstLine}`);
+    showAppToast(`命令共 ${lines.length} 行，为避免直接执行已仅填入首行`);
   }
   if (!firstLine) return;
   const writeCommand = isGenericProtocol(cur.host?.protocol) ? "write_generic_session" : "write_ssh_session";
   invoke(writeCommand, { sessionId: cur.id, data: firstLine }).catch((e: any) => {
-    console.error("写入终端失败:", e);
-    alert("写入终端失败: " + (e?.message || e));
+    showAppToast(`命令写入失败：${String(e?.message || e)}`, "error");
   });
   cur.termInstance?.focus();
   closeContextMenu();
@@ -12657,6 +12852,7 @@ onUnmounted(() => {
       </template>
       <template v-else-if="contextMenu.targetType === 'sftp_item'">
         <div v-if="!contextMenu.targetSftpItem?.is_dir" class="menu-item" @click="sftpTriggerDownload(contextMenu.targetSftpItem!)">下载文件到本地</div>
+        <div v-else class="menu-item" @click="sftpTriggerDownloadDir(contextMenu.targetSftpItem!)">下载文件夹到本地</div>
         <div class="menu-item" @click="sftpOpenRename(contextMenu.targetSftpItem!)">重命名</div>
         <div class="menu-item" @click="sftpOpenChmod(contextMenu.targetSftpItem!)">修改权限 (chmod)</div>
         <div class="menu-item" @click="sftpViewProperties(contextMenu.targetSftpItem!)">查看文件属性</div>
@@ -13791,9 +13987,15 @@ onUnmounted(() => {
           </div>
           <div class="modal-footer">
             <button class="btn-cancel" @click="chooseTransferConflict('cancel')">取消</button>
-            <button class="btn-sec-act" @click="chooseTransferConflict('skip')">跳过</button>
-            <button class="btn-sec-act" @click="chooseTransferConflict('rename')">重命名</button>
-            <button class="btn-danger" @click="chooseTransferConflict('overwrite')">覆盖</button>
+            <template v-if="transferConflictModal.mode === 'dir'">
+              <button class="btn-sec-act" @click="chooseTransferConflict('rename')">另存为新文件夹</button>
+              <button class="btn-danger" @click="chooseTransferConflict('overwrite')">合并覆盖</button>
+            </template>
+            <template v-else>
+              <button class="btn-sec-act" @click="chooseTransferConflict('skip')">跳过</button>
+              <button class="btn-sec-act" @click="chooseTransferConflict('rename')">重命名</button>
+              <button class="btn-danger" @click="chooseTransferConflict('overwrite')">覆盖</button>
+            </template>
           </div>
         </div>
       </div>
@@ -14390,7 +14592,9 @@ onUnmounted(() => {
 
     <!-- 轻量操作回执：浮在窗口底部居中，不占面板布局，避免被工具栏按钮挤掉 -->
     <Transition name="toast-fade">
-      <div v-if="historyCopyTip" class="app-toast">{{ historyCopyTip }}</div>
+      <div v-if="appToastText" class="app-toast" :class="{ 'is-error': appToastKind === 'error' }">
+        {{ appToastText }}
+      </div>
     </Transition>
 
   </div>

@@ -7001,10 +7001,18 @@ body,
   border: 1px solid var(--border-card);
   color: var(--text-main);
   font-size: 12px;
-  line-height: 1.2;
-  white-space: nowrap;
+  line-height: 1.5;
+  max-width: 60vw;
+  text-align: center;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   pointer-events: none;
   z-index: 99999;
+}
+/* 失败提示用红色，与成功/中性反馈区分 */
+.app-toast.is-error {
+  border-color: rgba(245, 101, 101, 0.55);
+  color: #F56565;
 }
 
 .toast-fade-enter-active,

@@ -21,9 +21,13 @@ pub struct FtpSession {
     pub port: u16,
 }
 
+/// FTP 会话表。
+///
+/// 每个会话单独包一层 Mutex：FTP 是单连接串行协议，同一会话的操作必须排队，
+/// 但不同会话之间不该互相阻塞。全局表只在查表/增删时短暂加锁。
 #[derive(Default)]
 pub struct FtpManager {
-    pub sessions: Arc<Mutex<HashMap<String, FtpSession>>>,
+    pub sessions: Arc<Mutex<HashMap<String, Arc<Mutex<FtpSession>>>>>,
 }
 
 impl FtpManager {
@@ -46,6 +50,18 @@ fn connect_tcp(host: &str, port: u16) -> Result<TcpStream, String> {
         }
     }
     Err(format!("连接 {}:{} 失败: {}", host, port, last))
+}
+
+/// 远端临时文件后缀：时间戳 + 进程内自增序号，避免同一毫秒内并发上传撞名。
+fn next_temp_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{}-{}", ts, seq)
 }
 
 impl FtpSession {
@@ -190,13 +206,41 @@ impl FtpSession {
     }
 
     pub fn download(&mut self, remote: &str, local: &Path) -> Result<u64, String> {
+        // 先落到 `.qshell-part`，完整收完再替换目标文件：
+        // 中途断线时原来的同名文件不会被截成半截，与 SFTP 的下载语义保持一致。
+        let mut temp_os = local.as_os_str().to_os_string();
+        temp_os.push(".qshell-part");
+        let temp = std::path::PathBuf::from(temp_os);
+
+        // 上次进程在「旧文件已移开、新文件未就位」之间中断时，先把原文件恢复回去，
+        // 否则用户的原文件会凭空消失，只剩一个没人认得的 .qshell-old。
+        let mut backup_os = local.as_os_str().to_os_string();
+        backup_os.push(".qshell-old");
+        let backup = std::path::PathBuf::from(backup_os);
+        if !local.exists() && backup.exists() {
+            let _ = std::fs::rename(&backup, local);
+        }
+
+        match self.download_to(remote, &temp) {
+            Ok(total) => {
+                crate::sftp::replace_local_file(&temp, local)?;
+                Ok(total)
+            }
+            Err(e) => {
+                let _ = std::fs::remove_file(&temp);
+                Err(e)
+            }
+        }
+    }
+
+    fn download_to(&mut self, remote: &str, target: &Path) -> Result<u64, String> {
         let mut data = self.pasv()?;
         self.send(&format!("RETR {}", remote))?;
         let (code, msg) = self.read_response()?;
         if code != 150 && code != 125 {
             return Err(format!("下载失败: {} {}", code, msg));
         }
-        let mut file = std::fs::File::create(local).map_err(|e| format!("创建本地文件失败: {}", e))?;
+        let mut file = std::fs::File::create(target).map_err(|e| format!("创建本地文件失败: {}", e))?;
         let mut buf = [0u8; 64 * 1024];
         let mut total = 0u64;
         loop {
@@ -208,6 +252,7 @@ impl FtpSession {
                 .map_err(|e| format!("写入本地文件失败: {}", e))?;
             total += n as u64;
         }
+        drop(data);
         let (code, msg) = self.read_response()?;
         if code != 226 && code != 250 {
             return Err(format!("下载未完成: {} {}", code, msg));
@@ -216,6 +261,33 @@ impl FtpSession {
     }
 
     pub fn upload(&mut self, remote: &str, local: &Path) -> Result<u64, String> {
+        // 与 SFTP 一致：先传成远端临时文件，成功后再改名覆盖，
+        // 避免传输中断把服务器上的原文件写成半截。
+        let temp = format!("{}.qshell-tmp-{}", remote, next_temp_suffix());
+        match self.upload_to(&temp, local) {
+            Ok(total) => match self.rename(&temp, remote) {
+                Ok(()) => Ok(total),
+                // 有些 FTP 服务器不允许 RNTO 覆盖已存在的目标：删掉目标再试一次。
+                // 第二次仍失败时保留临时文件，并在错误里给出文件名，避免数据丢失。
+                Err(_) => {
+                    let _ = self.remove(remote, false);
+                    match self.rename(&temp, remote) {
+                        Ok(()) => Ok(total),
+                        Err(e) => Err(format!(
+                            "上传已完成，但无法写入目标文件（{}）；内容保留在临时文件 {} 中",
+                            e, temp
+                        )),
+                    }
+                }
+            },
+            Err(e) => {
+                let _ = self.remove(&temp, false);
+                Err(e)
+            }
+        }
+    }
+
+    fn upload_to(&mut self, remote: &str, local: &Path) -> Result<u64, String> {
         let mut data = self.pasv()?;
         self.send(&format!("STOR {}", remote))?;
         let (code, msg) = self.read_response()?;
@@ -273,7 +345,8 @@ impl FtpSession {
         }
         Ok(())
     }
-    pub fn close(mut self) {
+    /// 礼貌性地发 QUIT 并关闭控制连接。
+    pub fn close(&mut self) {
         let _ = self.send("QUIT");
     }
 }
@@ -313,9 +386,30 @@ fn parse_list_output(raw: &[u8]) -> Vec<FtpEntry> {
 }
 
 // ================= Tauri 命令 =================
+//
+// 全部是 async + spawn_blocking：FTP 是同步阻塞协议，一次 LIST/RETR 可能持续
+// 数秒到数分钟。同步 Tauri 命令跑在主线程上，如果还持有全局会话锁做网络 IO，
+// 会把整个界面连同其他会话一起卡住。现在全局锁只用于取会话，实际 IO 在阻塞
+// 线程池里执行，且只锁该会话自身。
+
+fn session_of(
+    state: &tauri::State<'_, FtpManager>,
+    session_id: &str,
+) -> Result<Arc<Mutex<FtpSession>>, String> {
+    state
+        .sessions
+        .lock()
+        .get(session_id)
+        .cloned()
+        .ok_or_else(|| "FTP 会话不存在".to_string())
+}
+
+fn join_error(e: tokio::task::JoinError) -> String {
+    format!("FTP 操作任务异常: {}", e)
+}
 
 #[tauri::command]
-pub fn ftp_connect(
+pub async fn ftp_connect(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     host: String,
@@ -323,101 +417,150 @@ pub fn ftp_connect(
     username: String,
     password: String,
 ) -> Result<(), String> {
-    let session = FtpSession::connect_and_login(&host, port, &username, &password)?;
-    let mut map = state.sessions.lock();
-    if let Some(old) = map.remove(&session_id) {
-        old.close();
+    let session = tokio::task::spawn_blocking(move || {
+        FtpSession::connect_and_login(&host, port, &username, &password)
+    })
+    .await
+    .map_err(join_error)??;
+
+    let old = state
+        .sessions
+        .lock()
+        .insert(session_id, Arc::new(Mutex::new(session)));
+    if let Some(old) = old {
+        // 旧连接的重连场景：QUIT 也要走网络，放到阻塞线程里做
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Some(mut sess) = old.try_lock() {
+                sess.close();
+            }
+        })
+        .await;
     }
-    map.insert(session_id, session);
     Ok(())
 }
 
 #[tauri::command]
-pub fn ftp_list(
+pub async fn ftp_list(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     path: String,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    let entries = session.list(&path)?;
-    Ok(entries
-        .into_iter()
-        .map(|e| {
-            serde_json::json!({
-                "name": e.name,
-                "is_dir": e.is_dir,
-                "size": e.size,
-                "mode_str": e.mode_str,
-            })
-        })
-        .collect())
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        let entries = sess.list(&path)?;
+        Ok::<_, String>(
+            entries
+                .into_iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "name": e.name,
+                        "is_dir": e.is_dir,
+                        "size": e.size,
+                        "mode_str": e.mode_str,
+                    })
+                })
+                .collect(),
+        )
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
-pub fn ftp_download(
+pub async fn ftp_download(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     remote_path: String,
     local_path: String,
 ) -> Result<u64, String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    session.download(&remote_path, Path::new(&local_path))
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        sess.download(&remote_path, Path::new(&local_path))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
-pub fn ftp_close(state: tauri::State<'_, FtpManager>, session_id: String) -> Result<(), String> {
-    let mut map = state.sessions.lock();
-    if let Some(session) = map.remove(&session_id) {
-        session.close();
+pub async fn ftp_close(
+    state: tauri::State<'_, FtpManager>,
+    session_id: String,
+) -> Result<(), String> {
+    let removed = state.sessions.lock().remove(&session_id);
+    if let Some(session) = removed {
+        let _ = tokio::task::spawn_blocking(move || {
+            // 若仍有传输在跑，这里是排队等待传输结束；拿不到锁说明已被占用，
+            // 结构随最后一个引用释放而关闭即可。
+            if let Some(mut sess) = session.try_lock() {
+                sess.close();
+            }
+        })
+        .await;
     }
     Ok(())
 }
 
 #[tauri::command]
-pub fn ftp_upload(
+pub async fn ftp_upload(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     remote_path: String,
     local_path: String,
 ) -> Result<u64, String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    session.upload(&remote_path, Path::new(&local_path))
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        sess.upload(&remote_path, Path::new(&local_path))
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
-pub fn ftp_remove(
+pub async fn ftp_remove(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     remote_path: String,
     is_dir: bool,
 ) -> Result<(), String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    session.remove(&remote_path, is_dir)
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        sess.remove(&remote_path, is_dir)
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
-pub fn ftp_rename(
+pub async fn ftp_rename(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     from_path: String,
     to_path: String,
 ) -> Result<(), String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    session.rename(&from_path, &to_path)
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        sess.rename(&from_path, &to_path)
+    })
+    .await
+    .map_err(join_error)?
 }
 
 #[tauri::command]
-pub fn ftp_mkdir(
+pub async fn ftp_mkdir(
     state: tauri::State<'_, FtpManager>,
     session_id: String,
     remote_path: String,
 ) -> Result<(), String> {
-    let mut map = state.sessions.lock();
-    let session = map.get_mut(&session_id).ok_or("FTP 会话不存在")?;
-    session.mkdir(&remote_path)
+    let session = session_of(&state, &session_id)?;
+    tokio::task::spawn_blocking(move || {
+        let mut sess = session.lock();
+        sess.mkdir(&remote_path)
+    })
+    .await
+    .map_err(join_error)?
 }

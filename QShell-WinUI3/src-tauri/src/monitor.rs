@@ -241,7 +241,7 @@ pub async fn fetch_system_metrics(
                         }
                     }
                 }
-            } else if trimmed.starts_with("DF:") {            } else if trimmed.starts_with("DF:") {
+            } else if trimmed.starts_with("DF:") {
                 let values: Vec<u64> = trimmed[3..]
                     .split_whitespace()
                     .filter_map(|v| v.parse().ok())

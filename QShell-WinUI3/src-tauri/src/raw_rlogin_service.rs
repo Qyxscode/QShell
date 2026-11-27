@@ -51,7 +51,11 @@ fn register_session(
         pty_master: None,
         pty_child: None,
     };
-    state.register_session(session_id.to_string(), sess);
+    if state.register_session(session_id.to_string(), sess).is_none() {
+        // 建连期间标签已被关闭：不启动读线程，套接字随会话结构释放
+        stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        return Err("会话已在建立过程中关闭".to_string());
+    }
     Ok(writer_arc)
 }
 

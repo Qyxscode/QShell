@@ -2,7 +2,20 @@
 
 QShell 是一个面向 Windows 的 SSH / SFTP / Telnet / 串口 / 本地终端一体化客户端，基于 **Tauri 2 + Rust + Vue 3 + xterm.js**。
 
-## 目录结构（Tauri 标准布局）
+## 源码唯一性说明
+
+**本目录（`QShell-WinUI3`）是 QShell 唯一的宿主源码位置**，`src/` 与 `src-tauri/` 均只在此处维护。
+
+同级目录中另有几个名称相近的内容，容易误改，特此标注：
+
+| 路径 | 性质 | 是否参与本产品构建 |
+| --- | --- | --- |
+| `QShell-WinUI3/` | 当前产品源码（Tauri 2 + Rust + Vue 3） | 是 |
+| `../QShell-Lite/` | 早期 C# WinForms 版本源码，独立技术栈 | 否 |
+| `../QShellLite-测试/` | 上述 Lite 版本的构建产物（exe） | 否 |
+
+历史遗留的旧副本 `../qshell-next/`（含一份过时的 `src-tauri/src/lib.rs`）已删除，不再存在第二份 Rust 宿主源码。若在其他位置发现 `src-tauri`，一律视为非权威副本，不得在其上修改。
+
 
 ```
 QShell-WinUI3/

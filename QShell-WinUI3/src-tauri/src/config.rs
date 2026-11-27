@@ -116,6 +116,18 @@ pub struct HostItem {
     /// 是否使用系统 ssh-agent 认证
     #[serde(default)]
     pub use_agent: Option<bool>,
+    /// 文件传输方式（auto / none / sftp / ftp）
+    #[serde(default)]
+    pub file_protocol: Option<String>,
+    #[serde(default)]
+    pub ftp_port: Option<u16>,
+    #[serde(default)]
+    pub ftp_user: Option<String>,
+    #[serde(default)]
+    pub ftp_pwd: Option<String>,
+    /// 本地终端类型（powershell / cmd）
+    #[serde(default)]
+    pub local_shell: Option<String>,
     pub details: Option<HostDetails>,
     pub latency_text: Option<String>,
 }
@@ -171,6 +183,18 @@ pub struct AppSettings {
     pub terminal_bg_image_dim: Option<f32>,
     pub terminal_bg_image_auto_fg: Option<bool>,
     pub accent_color: Option<String>,
+    /// 界面配色预设 id
+    #[serde(default)]
+    pub theme_preset: Option<String>,
+    /// 终端输出关键字高亮开关
+    #[serde(default)]
+    pub output_highlight: Option<bool>,
+    /// 用户自定义终端前景色（与 theme_preset 派生色并存）
+    #[serde(default)]
+    pub terminal_fg_user_color: Option<String>,
+    /// 自定义背景图路径（与 terminal_bg_image 并存的旧字段名）
+    #[serde(default)]
+    pub custom_bg_image: Option<String>,
     pub minimize_to_tray: Option<bool>,
     /// 用户偏好的开机自启状态：用于升级/重装后自启项被清掉时自动恢复
     #[serde(default)]
@@ -335,6 +359,16 @@ pub(crate) fn write_config_plain(plain: &[u8]) -> Result<(), String> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
+    // 与 save_hosts_config 保持一致：磁盘上已是密文且本次未解锁时，绝不写回明文，
+    // 否则备份导入会把含密码与私钥的密文覆盖成明文。
+    if password.is_none() {
+        let already_encrypted = fs::read(&p)
+            .map(|raw| crate::config_crypto::is_encrypted(&raw))
+            .unwrap_or(false);
+        if already_encrypted {
+            return Err(CONFIG_LOCKED.to_string());
+        }
+    }
     match password {
         Some(password) => {
             let encrypted = crate::config_crypto::encrypt(plain, &password)?;
@@ -461,5 +495,147 @@ pub fn set_config_encryption(enabled: bool, password: String) -> Result<(), Stri
         write_file_atomic(&p, &plain)?;
         *CONFIG_PASSWORD.lock().unwrap_or_else(|e| e.into_inner()) = None;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 该环境变量是进程级全局状态，用例之间必须串行访问
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ConfigPathGuard(PathBuf);
+
+    impl ConfigPathGuard {
+        fn new(tag: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "qshell_{}_{}",
+                tag,
+                std::process::id()
+            ));
+            let _ = fs::create_dir_all(&dir);
+            let path = dir.join("config.json");
+            // SAFETY: 由 ENV_LOCK 保证同一时刻只有一个用例读写该变量
+            unsafe { std::env::set_var("QSHELL_CONFIG_PATH", &path) };
+            Self(path)
+        }
+    }
+
+    impl Drop for ConfigPathGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("QSHELL_CONFIG_PATH") };
+            if let Some(dir) = self.0.parent() {
+                let _ = fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    #[test]
+    fn save_then_load_keeps_host_file_transfer_fields() {
+        // 端到端：这条链路正是当初丢字段的地方（前端写好 -> 后端落盘 -> 读回）
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ConfigPathGuard::new("cfg_roundtrip");
+
+        let cfg: AppConfig = serde_json::from_str(
+            r##"{
+                "version": "1.1",
+                "devices": [{
+                    "group": "g",
+                    "hosts": [{
+                        "name": "web",
+                        "host": "10.0.0.9",
+                        "port": 22,
+                        "user": "root",
+                        "file_protocol": "none",
+                        "ftp_port": 2121,
+                        "ftp_user": "ftpuser",
+                        "ftp_pwd": "ftppass",
+                        "local_shell": "cmd"
+                    }]
+                }],
+                "managed_hosts": [],
+                "settings": {
+                    "theme_preset": "ocean",
+                    "output_highlight": false,
+                    "terminal_fg_user_color": "#abcdef",
+                    "custom_bg_image": "C:/bg.png"
+                }
+            }"##,
+        )
+        .unwrap();
+
+        save_hosts_config(cfg).unwrap();
+        let loaded = load_hosts_config().unwrap();
+
+        let host = &loaded.devices[0].hosts[0];
+        assert_eq!(host.file_protocol.as_deref(), Some("none"));
+        assert_eq!(host.ftp_port, Some(2121));
+        assert_eq!(host.ftp_user.as_deref(), Some("ftpuser"));
+        assert_eq!(host.ftp_pwd.as_deref(), Some("ftppass"));
+        assert_eq!(host.local_shell.as_deref(), Some("cmd"));
+
+        let settings = loaded.settings.expect("settings 不应丢失");
+        assert_eq!(settings.theme_preset.as_deref(), Some("ocean"));
+        assert_eq!(settings.output_highlight, Some(false));
+        assert_eq!(settings.terminal_fg_user_color.as_deref(), Some("#abcdef"));
+        assert_eq!(settings.custom_bg_image.as_deref(), Some("C:/bg.png"));
+    }
+
+    #[test]
+    fn host_item_roundtrip_keeps_file_transfer_fields() {
+        // 这五个字段曾因后端结构体缺失被 serde 静默丢弃，重启后 FTP 配置与本地 shell 选择丢失
+        let json = r#"{"name":"a","host":"10.0.0.1","port":22,"user":"root",
+            "file_protocol":"none","ftp_port":2121,"ftp_user":"ftp","ftp_pwd":"pw",
+            "local_shell":"cmd"}"#;
+        let host: HostItem = serde_json::from_str(json).unwrap();
+        assert_eq!(host.file_protocol.as_deref(), Some("none"));
+        assert_eq!(host.ftp_port, Some(2121));
+        assert_eq!(host.ftp_user.as_deref(), Some("ftp"));
+        assert_eq!(host.ftp_pwd.as_deref(), Some("pw"));
+        assert_eq!(host.local_shell.as_deref(), Some("cmd"));
+
+        let out = serde_json::to_string(&host).unwrap();
+        assert!(out.contains("\"file_protocol\":\"none\""), "file_protocol 未被序列化");
+        assert!(out.contains("\"ftp_pwd\":\"pw\""), "ftp_pwd 未被序列化");
+        assert!(out.contains("\"local_shell\":\"cmd\""), "local_shell 未被序列化");
+    }
+
+    #[test]
+    fn app_settings_roundtrip_keeps_ui_preferences() {
+        let json = r##"{"theme_preset":"ocean","output_highlight":false,
+            "terminal_fg_user_color":"#abcdef","custom_bg_image":"C:/bg.png"}"##;
+        let settings: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(settings.theme_preset.as_deref(), Some("ocean"));
+        assert_eq!(settings.output_highlight, Some(false));
+        assert_eq!(settings.terminal_fg_user_color.as_deref(), Some("#abcdef"));
+        assert_eq!(settings.custom_bg_image.as_deref(), Some("C:/bg.png"));
+
+        let out = serde_json::to_string(&settings).unwrap();
+        for key in [
+            "theme_preset",
+            "output_highlight",
+            "terminal_fg_user_color",
+            "custom_bg_image",
+        ] {
+            assert!(out.contains(key), "{} 未被序列化", key);
+        }
+    }
+
+    #[test]
+    fn write_config_plain_refuses_plaintext_when_encrypted() {
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = ConfigPathGuard::new("cfg_lock");
+        let cfg_path = guard.0.clone();
+        let encrypted = crate::config_crypto::encrypt(b"{\"devices\":[]}", "pw").unwrap();
+        fs::write(&cfg_path, &encrypted).unwrap();
+
+        let before = fs::read(&cfg_path).unwrap();
+        let result = write_config_plain(b"{\"devices\":[{\"group\":\"x\",\"hosts\":[]}]}");
+        let after = fs::read(&cfg_path).unwrap();
+
+        assert!(result.is_err(), "已加密且未解锁时不得写入明文");
+        assert_eq!(result.unwrap_err(), CONFIG_LOCKED);
+        assert_eq!(before, after, "磁盘上的密文不能被改写");
     }
 }
