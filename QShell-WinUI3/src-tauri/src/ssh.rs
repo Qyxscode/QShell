@@ -163,6 +163,39 @@ fn apply_session_prefs(sess: &ssh2::Session) {
     );
 }
 
+/// 私钥字段同时支持两种填法：
+/// 1. 文件路径（如 `C:\Users\x\.ssh\id_rsa`）
+/// 2. 直接粘贴私钥内容（`-----BEGIN ... PRIVATE KEY-----` 开头的 PEM / OpenSSH 文本）
+/// 内容形式的好处是：私钥随主机配置一起被备份，不需要额外保管密钥文件。
+pub(crate) fn auth_with_private_key(
+    sess: &ssh2::Session,
+    username: &str,
+    raw_key: &str,
+    passphrase: Option<&str>,
+) -> bool {
+    let key = raw_key.trim().trim_start_matches('\u{feff}');
+    if key.is_empty() {
+        return false;
+    }
+    let key = key.trim();
+
+    if key.starts_with("-----BEGIN") {
+        let mut pem = key.to_string();
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+        let _ = sess.userauth_pubkey_memory(username, None, &pem, passphrase);
+        return sess.authenticated();
+    }
+
+    let path = std::path::Path::new(key);
+    if path.is_file() {
+        let _ = sess.userauth_pubkey_file(username, None, path, passphrase);
+        return sess.authenticated();
+    }
+    false
+}
+
 fn authenticate(
     sess: &ssh2::Session,
     username: &str,
@@ -171,11 +204,8 @@ fn authenticate(
     passphrase: Option<&str>,
     use_agent: bool,
 ) -> Result<(), String> {
-    if let Some(key_path) = private_key.filter(|k| !k.trim().is_empty()) {
-        let path = std::path::Path::new(key_path);
-        if path.is_file() {
-            let _ = sess.userauth_pubkey_file(username, None, path, passphrase);
-        }
+    if let Some(key) = private_key.filter(|k| !k.trim().is_empty()) {
+        auth_with_private_key(sess, username, key, passphrase);
     }
     if !sess.authenticated() && use_agent {
         let _ = sess.userauth_agent(username);

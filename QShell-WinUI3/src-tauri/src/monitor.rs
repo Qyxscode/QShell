@@ -260,7 +260,7 @@ pub async fn fetch_system_metrics(
                 if let Some((_, v)) = trimmed.split_once(':') {
                     let value = v.trim();
                     if !value.is_empty() {
-                        cpu_model = Some(value.to_string());
+                        cpu_model = Some(clean_cpu_model(value));
                     }
                 }
             } else if trimmed.starts_with("default ") {

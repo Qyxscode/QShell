@@ -720,17 +720,9 @@ fn open_session(p: &TrafficAuditParams) -> Result<ssh2::Session, String> {
     );
     sess.handshake().map_err(|e| format!("SSH 握手失败: {}", e))?;
 
-    if let Some(key_path) = p.private_key.as_deref() {
-        if !key_path.trim().is_empty() {
-            let path = std::path::Path::new(key_path);
-            if path.is_file() {
-                let _ = sess.userauth_pubkey_file(
-                    &p.username,
-                    None,
-                    path,
-                    p.passphrase.as_deref(),
-                );
-            }
+    if let Some(raw_key) = p.private_key.as_deref() {
+        if !raw_key.trim().is_empty() {
+            crate::ssh::auth_with_private_key(&sess, &p.username, raw_key, p.passphrase.as_deref());
         }
     }
     if !sess.authenticated() {

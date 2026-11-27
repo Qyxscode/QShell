@@ -102,6 +102,26 @@ fn write_clipboard_text(text: String) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     clipboard.set_text(text).map_err(|e| e.to_string())
 }
+
+/// 读取私钥文件内容，供"浏览选择"后直接填入私钥框（内容随配置一起备份，不必再单独保管文件）。
+#[tauri::command]
+fn read_private_key_text(path: String) -> Result<String, String> {
+    let p = std::path::PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("文件不存在或无权访问".to_string());
+    }
+    let size = std::fs::metadata(&p).map_err(|e| format!("读取文件失败：{}", e))?.len();
+    if size > 256 * 1024 {
+        return Err("文件大小超出限制，无法作为私钥载入".to_string());
+    }
+    let bytes = std::fs::read(&p).map_err(|e| format!("读取文件失败：{}", e))?;
+    let text = String::from_utf8(bytes).map_err(|_| "文件编码无法识别，私钥需为文本格式".to_string())?;
+    if !text.contains("PRIVATE KEY") {
+        return Err("文件内容不符合 PEM 或 OpenSSH 私钥格式".to_string());
+    }
+    // 统一成 \n，避免 Windows 换行导致解析失败
+    Ok(text.replace("\r\n", "\n").replace('\r', "\n"))
+}
 /// 串口设备信息。USB 转串口（CH340 / CP210x / FTDI / CDC ACM）在 Windows 上都会
 /// 映射成 COM 口，这里把 USB 描述符里的厂商/产品名一起带出来，方便用户区分多个同类设备。
 #[derive(serde::Serialize)]
@@ -646,6 +666,7 @@ pub fn run() {
             list_serial_ports,
             read_clipboard_text,
             write_clipboard_text,
+            read_private_key_text,
             set_external_drop_enabled,
             start_telnet_session,
             start_serial_session,

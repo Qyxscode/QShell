@@ -2653,6 +2653,7 @@ watch(currentView, (val) => {
 });
 
 let monitorInterval: number | null = null;
+let expireTickTimer: number | null = null;
 // 系统指标轮询的 in-flight 标记：后端一旦卡住，3 秒一次的轮询会把
 // blocking 线程池逐步抽干，最终拖死 SFTP 传输与流量审计。
 let metricsPollInFlight = false;
@@ -2880,6 +2881,8 @@ function focusSessionEvent(event: SessionEvent) {
 }
 const hostAlertList = ref<HostAlertInfo[]>([]);
 const showAlertPopover = ref(false);
+/** 每分钟推进的时钟，用于让"到期倒计时"在软件长时间开着时也能自己变色 */
+const nowTick = ref(Date.now());
 
 const alertPopoverTargetRight = ref(120);
 const alertPopoverEl = ref<HTMLElement | null>(null);
@@ -3071,6 +3074,92 @@ function handleAlertClick(al: HostAlertInfo) {
         highlightedHostKey.value = null;
       }
     }, 4800);
+  }
+}
+
+/**
+ * 到期状态：infinite 无限期 / normal 正常 / soon 3 天内到期（黄） / expired 到期当日及之后（红）
+ * 读取 nowTick 以便软件长时间开着时，跨天也能自动变色。
+ */
+function expireState(h: HostItem): "infinite" | "normal" | "soon" | "expired" {
+  void nowTick.value;
+  const raw = h.details?.expire_date;
+  if (!raw || raw === "无限") return "infinite";
+  const exp = new Date(raw.replace(/-/g, "/"));
+  if (isNaN(exp.getTime())) return "normal";
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const expDay = new Date(exp.getFullYear(), exp.getMonth(), exp.getDate()).getTime();
+  if (expDay <= todayStart) return "expired";
+  const days = Math.round((expDay - todayStart) / 86400000);
+  return days <= 3 ? "soon" : "normal";
+}
+
+/**
+ * 顺延一个自然月。目标月放不下这一天时（如 1/30 遇到 2 月），
+ * 先落到该月最后一天，再把差额天数补到下个月（1/30 → 3/2），保证一天不少给。
+ */
+function addOneMonth(d: Date): Date {
+  const y = d.getFullYear();
+  const m = d.getMonth();
+  const day = d.getDate();
+  const hh = d.getHours();
+  const mi = d.getMinutes();
+  const ss = d.getSeconds();
+  const ty = m === 11 ? y + 1 : y;
+  const tm = (m + 1) % 12;
+  const lastDay = new Date(ty, tm + 1, 0).getDate();
+  if (day <= lastDay) {
+    return new Date(ty, tm, day, hh, mi, ss);
+  }
+  return new Date(ty, tm, lastDay + (day - lastDay), hh, mi, ss);
+}
+
+/**
+ * 已过期的到期日逐月顺延到未来；保留原本的时分秒。
+ * 到期当日不顺延，保证当天仍显示为过期（红）。
+ */
+function renewExpireDate(raw: string): string | null {
+  const exp = new Date(raw.replace(/-/g, "/"));
+  if (isNaN(exp.getTime())) return null;
+  const now = new Date();
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (exp.getTime() >= todayStart.getTime()) return null;
+
+  let target = exp;
+  for (let i = 0; i < 600; i++) {
+    target = addOneMonth(target);
+    if (target.getTime() >= now.getTime()) break;
+  }
+
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const sep = raw.includes("/") ? "/" : "-";
+  const datePart = `${target.getFullYear()}${sep}${pad(target.getMonth() + 1)}${sep}${pad(target.getDate())}`;
+  const hasTime = /\d{1,2}:\d{2}/.test(raw);
+  return hasTime
+    ? `${datePart} ${pad(target.getHours())}:${pad(target.getMinutes())}:${pad(target.getSeconds())}`
+    : datePart;
+}
+
+/** 把过期主机顺延到未来并落盘；用户不主动删除即视为继续使用 */
+async function autoRenewExpiredHosts() {
+  let changed = false;
+  for (const h of configData.value.managed_hosts) {
+    if (!h.details) continue;
+    const raw = h.details.expire_date;
+    if (!raw || raw === "无限") continue;
+    const next = renewExpireDate(raw);
+    if (next && next !== raw) {
+      h.details.expire_date = next;
+      changed = true;
+    }
+  }
+  if (!changed) return;
+  evaluateHostAlerts();
+  try {
+    await invoke("save_hosts_config", { config: configData.value });
+  } catch (e) {
+    console.warn("[expire] 自动顺延结果保存失败:", e);
   }
 }
 
@@ -4447,6 +4536,7 @@ const backupModal = ref({
   webdav_pwd: "",
   webdav_path: "/QShell/qshell_backup.zip",
   status_msg: "",
+  status_kind: "ok",
   is_busy: false,
 });
 const showHostPassword = ref(false);
@@ -4711,16 +4801,52 @@ function openEditHostModal(h: HostItem, mode: 'all' | 'connection' | 'asset' = '
     targetGroup: null,
   };
   closeContextMenu();
+  nextTick(() => {
+    resizeKeyInputToFit();
+    requestAnimationFrame(resizeKeyInputToFit);
+  });
 }
 
-async function browseKeyFile() {
+async function browseKeyFile(target: "key_path" | "proxy_key" = "key_path") {
   const selected = await openLocalFileBrowser({
     action: "open",
     title: "选择 SSH 私钥文件 (.pem, id_rsa)",
   });
-  if (selected) {
-    hostModal.value.form.key_path = selected;
+  if (!selected) return;
+  // 选中后直接把文件内容填进框里，备份配置时私钥就跟着一起走了
+  let filled = selected;
+  try {
+    filled = await invoke<string>("read_private_key_text", { path: selected });
+  } catch (e) {
+    console.warn("读取私钥内容失败，改用文件路径:", e);
   }
+  if (target === "proxy_key") {
+    hostModal.value.form.proxy_key = filled;
+  } else {
+    hostModal.value.form.key_path = filled;
+  }
+  await nextTick();
+  resizeKeyInputToFit();
+  requestAnimationFrame(resizeKeyInputToFit);
+}
+
+// 私钥框：路径只有一行，粘进来的私钥内容需要多行显示，按内容自动增高
+// 只有内容真的超过上限（200px）时才允许滚动，否则短内容也会冒出滚动条
+const KEY_INPUT_MAX_H = 200;
+
+function fitKeyInput(el: HTMLTextAreaElement) {
+  el.style.height = "auto";
+  const full = el.scrollHeight;
+  el.style.height = `${Math.max(32, Math.min(full, KEY_INPUT_MAX_H))}px`;
+  el.style.overflowY = full > KEY_INPUT_MAX_H ? "auto" : "hidden";
+}
+
+function autoGrowKeyInput(e: Event) {
+  fitKeyInput(e.target as HTMLTextAreaElement);
+}
+
+function resizeKeyInputToFit() {
+  document.querySelectorAll<HTMLTextAreaElement>(".key-path-input").forEach(fitKeyInput);
 }
 
 async function saveHostForm() {
@@ -9994,8 +10120,10 @@ async function handleExportLocal() {
       uiState: collectBackupUiState(),
     });
     backupModal.value.status_msg = res.message;
+    backupModal.value.status_kind = res.success ? "ok" : "err";
   } catch (e: any) {
     backupModal.value.status_msg = `导出失败: ${e}`;
+    backupModal.value.status_kind = "err";
   }
 }
 
@@ -10015,15 +10143,18 @@ async function handleImportLocal() {
     const restored = applyBackupUiState(res.ui_state);
     backupModal.value.status_msg =
       restored.length > 0 ? `${res.message}（已恢复${restored.join("、")}）` : res.message;
+    backupModal.value.status_kind = res.success ? "ok" : "err";
     await loadConfig();
   } catch (e: any) {
     backupModal.value.status_msg = `导入失败: ${e}`;
+    backupModal.value.status_kind = "err";
   }
 }
 
 async function handleWebdavTest() {
   backupModal.value.is_busy = true;
   backupModal.value.status_msg = "正在测试连接 WebDAV...";
+  backupModal.value.status_kind = "busy";
   try {
     await persistWebdavSettings();
     const res = await invoke<{ success: boolean; message: string }>("test_webdav_connection", {
@@ -10035,8 +10166,10 @@ async function handleWebdavTest() {
       }
     });
     backupModal.value.status_msg = res.message;
+    backupModal.value.status_kind = res.success ? "ok" : "err";
   } catch (e: any) {
     backupModal.value.status_msg = `连接失败: ${e}`;
+    backupModal.value.status_kind = "err";
   } finally {
     backupModal.value.is_busy = false;
   }
@@ -10045,6 +10178,7 @@ async function handleWebdavTest() {
 async function handleWebdavUpload() {
   backupModal.value.is_busy = true;
   backupModal.value.status_msg = "正在上传备份至 WebDAV 云端...";
+  backupModal.value.status_kind = "busy";
   try {
     await persistWebdavSettings();
     const res = await invoke<{ success: boolean; message: string }>("webdav_upload_backup", {
@@ -10057,8 +10191,10 @@ async function handleWebdavUpload() {
       uiState: collectBackupUiState(),
     });
     backupModal.value.status_msg = res.message;
+    backupModal.value.status_kind = res.success ? "ok" : "err";
   } catch (e: any) {
     backupModal.value.status_msg = `上传失败: ${e}`;
+    backupModal.value.status_kind = "err";
   } finally {
     backupModal.value.is_busy = false;
   }
@@ -10067,6 +10203,7 @@ async function handleWebdavUpload() {
 async function handleWebdavDownload() {
   backupModal.value.is_busy = true;
   backupModal.value.status_msg = "正在从云端拉取备份恢复...";
+  backupModal.value.status_kind = "busy";
   try {
     await persistWebdavSettings();
     const res = await invoke<{ success: boolean; message: string; ui_state?: string | null }>(
@@ -10083,9 +10220,11 @@ async function handleWebdavDownload() {
     const restored = applyBackupUiState(res.ui_state);
     backupModal.value.status_msg =
       restored.length > 0 ? `${res.message}（已恢复${restored.join("、")}）` : res.message;
+    backupModal.value.status_kind = res.success ? "ok" : "err";
     await loadConfig();
   } catch (e: any) {
     backupModal.value.status_msg = `恢复失败: ${e}`;
+    backupModal.value.status_kind = "err";
   } finally {
     backupModal.value.is_busy = false;
   }
@@ -10093,19 +10232,32 @@ async function handleWebdavDownload() {
 
 // 批量从设备树导入到主机管理
 function openImportSelectModal() {
+  // 设备组与组内主机均按新增顺序追加，倒序遍历即可让最近添加的主机排在前面。
   const allTreeHosts: HostItem[] = [];
-  configData.value.devices.forEach(g => {
-    g.hosts.forEach(h => {
-      if (!configData.value.managed_hosts.some(m => m.host === h.host && m.port === h.port)) {
-        allTreeHosts.push(h);
-      }
-    });
+  [...configData.value.devices].reverse().forEach(g => {
+    const pending = g.hosts.filter(
+      h => !configData.value.managed_hosts.some(m => m.host === h.host && m.port === h.port)
+    );
+    for (let i = pending.length - 1; i >= 0; i--) {
+      allTreeHosts.push(pending[i]);
+    }
   });
   importSelectModal.value = {
     show: true,
     candidates: allTreeHosts,
     selectedIndexes: allTreeHosts.map((_, i) => i),
   };
+}
+
+function selectAllImportCandidates() {
+  importSelectModal.value.selectedIndexes = importSelectModal.value.candidates.map((_, i) => i);
+}
+
+function invertImportSelection() {
+  const total = importSelectModal.value.candidates.length;
+  const current = new Set(importSelectModal.value.selectedIndexes);
+  importSelectModal.value.selectedIndexes = Array.from({ length: total }, (_, i) => i)
+    .filter(i => !current.has(i));
 }
 
 async function confirmImportSelected() {
@@ -10192,6 +10344,11 @@ onMounted(async () => {
   window.addEventListener("blur", onPointerDragCancel);
 
   await loadConfig();
+  void autoRenewExpiredHosts();
+  expireTickTimer = window.setInterval(() => {
+    nowTick.value = Date.now();
+    void autoRenewExpiredHosts();
+  }, 60000);
   await refreshConfigEncryptionState();
   let launchedByAutostart = false;
   if (isTauri) {
@@ -10354,6 +10511,10 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (expireTickTimer !== null) {
+    window.clearInterval(expireTickTimer);
+    expireTickTimer = null;
+  }
   document.removeEventListener("pointerdown", suppressNativeDropForInternalDrag, true);
   document.removeEventListener("pointerup", restoreNativeDropAfterInternalDrag, true);
   document.removeEventListener("dragend", restoreNativeDropAfterInternalDrag, true);
@@ -12196,7 +12357,7 @@ onUnmounted(() => {
 
               <div class="card-meta">
                 <span>备注: {{ h.details?.memo || '无' }}</span>
-                <span>到期: {{ h.details?.expire_date || '无限' }}</span>
+                <span :class="['card-expire', `is-${expireState(h)}`]">到期: {{ h.details?.expire_date || '无限' }}</span>
                 <span v-if="!h.details?.traffic_total_infinite">结算日: 每月 {{ h.details?.reset_day || 1 }} 日 {{ String(h.details?.reset_hour || 0).padStart(2, '0') }}:{{ String(h.details?.reset_min || 0).padStart(2, '0') }}:{{ String(h.details?.reset_sec || 0).padStart(2, '0') }}</span>
                 <span>价格: {{ h.details?.price || '0.00' }} {{ h.details?.currency || 'CNY' }}</span>
               </div>
@@ -13036,9 +13197,16 @@ onUnmounted(() => {
 
             <div v-if="hostModal.form.protocol !== 'local'" class="form-row">
               <label>私钥证书 (支持 .pem / id_rsa)</label>
-              <div class="traffic-input-box">
-                <input v-model="hostModal.form.key_path" class="modal-input flex-1" placeholder="留空则使用密码认证" />
-                <button class="btn-sec-act btn-browse" type="button" @click="browseKeyFile">浏览选择...</button>
+              <div class="traffic-input-box key-input-box">
+                <textarea
+                  v-model="hostModal.form.key_path"
+                  class="modal-input flex-1 key-path-input"
+                  rows="1"
+                  spellcheck="false"
+                  placeholder="私钥文件路径或私钥内容；留空则使用密码认证"
+                  @input="autoGrowKeyInput"
+                ></textarea>
+                <button class="btn-sec-act btn-browse" type="button" @click="browseKeyFile()">浏览选择...</button>
                 <button class="btn-sec-act btn-browse" type="button" @click="openKeyGenModal">生成...</button>
               </div>
             </div>
@@ -13079,7 +13247,17 @@ onUnmounted(() => {
             </div>
             <div v-if="hostModal.form.protocol === 'ssh' && hostModal.form.proxy_host.trim()" class="form-row">
               <label>跳板机私钥 (可选)</label>
-              <input v-model="hostModal.form.proxy_key" class="modal-input" placeholder="留空则用密码 / Agent" />
+              <div class="traffic-input-box key-input-box">
+                <textarea
+                  v-model="hostModal.form.proxy_key"
+                  class="modal-input flex-1 key-path-input"
+                  rows="1"
+                  spellcheck="false"
+                  placeholder="私钥文件路径或私钥内容；留空则使用密码或 Agent 认证"
+                  @input="autoGrowKeyInput"
+                ></textarea>
+                <button class="btn-sec-act btn-browse" type="button" @click="browseKeyFile('proxy_key')">浏览选择...</button>
+              </div>
             </div>
 
             <!-- 终端类型（SSH / Telnet 适用；串口不涉及 TERM） -->
@@ -14131,7 +14309,11 @@ onUnmounted(() => {
             <button class="btn-sec-act" :disabled="backupModal.is_busy" @click="handleWebdavDownload">从云端恢复</button>
           </div>
 
-          <div v-if="backupModal.status_msg" class="backup-status-text">
+          <div
+            v-if="backupModal.status_msg"
+            class="backup-status-text"
+            :class="'is-' + backupModal.status_kind"
+          >
             {{ backupModal.status_msg }}
           </div>
         </div>
@@ -14145,7 +14327,7 @@ onUnmounted(() => {
     <!-- 弹窗 9：从设备列表导入主机 (HostImportSelectionDialog) -->
     <Transition name="modal-fade">
     <div v-if="importSelectModal.show" class="modal-overlay" @mousedown.self="importSelectModal.show = false">
-      <div class="modal-card modal-small">
+      <div class="modal-card modal-import">
         <div class="modal-header">
           <span class="modal-title">导入主机到管理面板</span>
           <span class="modal-close" @click="importSelectModal.show = false">✕</span>
@@ -14154,23 +14336,43 @@ onUnmounted(() => {
           <div v-if="importSelectModal.candidates.length === 0" class="no-task">
             所有设备树主机均已在主机管理中，无需重复导入。
           </div>
-          <div v-else class="import-list">
-            <div 
-              v-for="(h, idx) in importSelectModal.candidates" 
-              :key="h.host + h.port" 
-              class="import-item"
-            >
-              <label class="checkbox-label">
-                <input 
-                  type="checkbox" 
-                  :value="idx" 
-                  v-model="importSelectModal.selectedIndexes" 
-                />
-                <span class="import-hname">{{ h.name }}</span>
-                <span class="import-haddr">({{ h.host }}:{{ h.port }})</span>
-              </label>
+          <template v-else>
+            <div class="import-toolbar">
+              <span class="import-count">
+                已选 {{ importSelectModal.selectedIndexes.length }} / {{ importSelectModal.candidates.length }}
+              </span>
+              <div class="import-tool-actions">
+                <button
+                  class="import-tool-btn"
+                  type="button"
+                  :disabled="importSelectModal.selectedIndexes.length === importSelectModal.candidates.length"
+                  @click="selectAllImportCandidates"
+                >全选</button>
+                <button
+                  class="import-tool-btn"
+                  type="button"
+                  @click="invertImportSelection"
+                >反选</button>
+              </div>
             </div>
-          </div>
+            <div class="import-list">
+              <div 
+                v-for="(h, idx) in importSelectModal.candidates" 
+                :key="h.host + h.port" 
+                class="import-item"
+              >
+                <label class="checkbox-label">
+                  <input 
+                    type="checkbox" 
+                    :value="idx" 
+                    v-model="importSelectModal.selectedIndexes" 
+                  />
+                  <span class="import-hname">{{ h.name }}</span>
+                  <span class="import-haddr">({{ h.host }}:{{ h.port }})</span>
+                </label>
+              </div>
+            </div>
+          </template>
         </div>
         <div class="modal-footer">
           <button class="btn-cancel" @click="importSelectModal.show = false">取消</button>

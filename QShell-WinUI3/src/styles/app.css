@@ -3536,6 +3536,15 @@ html.window-resizing .workspace-layout {
   font-size: 11px;
   color: var(--text-sub);
 }
+/* 到期提醒：3 天内黄、到期当日及之后红（颜色走语义色变量，浅色主题同样可读） */
+.card-meta .card-expire.is-soon {
+  color: var(--color-warning);
+  font-weight: 600;
+}
+.card-meta .card-expire.is-expired {
+  color: var(--color-danger);
+  font-weight: 600;
+}
 
 .traffic-section {
   display: flex;
@@ -4305,6 +4314,34 @@ html.window-resizing .workspace-layout {
   width: 380px;
 }
 
+/* 导入主机：条目多、名称与地址较长，单独放宽尺寸并拉开行距 */
+.modal-card.modal-import {
+  width: 560px;
+}
+.modal-import .import-list {
+  max-height: 420px;
+  gap: 8px;
+  padding: 6px 4px 4px;
+}
+.modal-import .import-item {
+  padding: 10px 12px;
+}
+.modal-import .import-item .checkbox-label {
+  gap: 8px;
+  width: 100%;
+}
+.modal-import .import-hname {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.modal-import .import-haddr {
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
 .ssh-password-modal {
   width: 360px;
 }
@@ -4719,6 +4756,12 @@ input[type="checkbox"]:checked {
   border-color: var(--color-primary);
   box-shadow: 0 0 0 2px rgba(120, 217, 236, 0.15);
 }
+/* 禁用态与下拉框保持一致，避免"单位变灰了、数值还亮着" */
+.modal-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: var(--text-sub);
+}
 
 .modal-textarea {
   height: 70px;
@@ -4740,6 +4783,27 @@ input[type="checkbox"]:checked {
 .traffic-input-box .w-24 {
   width: 78px;
   flex-shrink: 0;
+}
+
+/* 私钥框：既可以是文件路径（一行），也可以是粘贴进来的私钥内容（多行自动增高） */
+.key-input-box {
+  align-items: flex-start;
+}
+.key-path-input {
+  height: auto;
+  min-height: 32px;
+  max-height: 200px;
+  padding: 7px 10px;
+  line-height: 1.4;
+  resize: none;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.key-input-box .btn-browse {
+  flex-shrink: 0;
+  height: 32px;
 }
 
 .checkbox-label {
@@ -4970,8 +5034,59 @@ input[type="checkbox"]:checked {
   color: #48BB78;
   border: 1px solid rgba(72, 187, 120, 0.25);
   line-height: 1.4;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.backup-status-text.is-err {
+  color: #F87171;
+  border-color: rgba(248, 113, 113, 0.25);
+}
+.backup-status-text.is-busy {
+  color: #A8C7FA;
+  border-color: rgba(168, 199, 250, 0.25);
 }
 
+.import-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 8px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border-capsule);
+}
+.import-count {
+  font-size: 11px;
+  color: var(--text-sub);
+  font-variant-numeric: tabular-nums;
+}
+.import-tool-actions {
+  display: flex;
+  gap: 6px;
+}
+.import-tool-btn {
+  height: 24px;
+  padding: 0 10px;
+  background: var(--bg-capsule);
+  color: var(--text-sub);
+  border: 1px solid var(--border-capsule);
+  border-radius: var(--radius-btn);
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.import-tool-btn:hover:not(:disabled) {
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.import-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
 .import-list {
   max-height: 260px;
   overflow-y: auto;
